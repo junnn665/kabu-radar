@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>株価ハック — 日本株の狙い目をシグナルで発見</title>
   <meta name="description" content="東証の全上場銘柄を監視し、検証済みのテクニカルシグナルで狙い目の日本株をサジェストします。" />
-  <meta name="theme-color" content="#0b0f14" />
+  <meta name="theme-color" content="#0E1116" />
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" href="icons/icon-192.png" />
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
@@ -13,30 +13,30 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
   <header class="top">
     <div class="bar">
-      <div class="brand"><span class="logo">◎</span> 株価ハック</div>
+      <div class="brand">株価ハック</div>
       <div class="meta">
-        <span id="status" class="dot"></span>
-        <span class="mono" id="updated">—</span>
-        <span class="chip" id="provider">…</span>
+        <span class="status-pill"><span id="status" class="dot"></span><span id="updated">—</span></span>
+        <span class="chip" id="provider" hidden>…</span>
         <span class="chip accent" id="wmode"></span>
-        <button id="open-settings" class="icon-btn" aria-label="設定">⚙</button>
+        <button id="open-settings" class="icon-btn" aria-label="設定">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"></path></svg>
+        </button>
       </div>
     </div>
-    <nav class="tabs">
-      <button class="tab" data-tab="watch">監視</button>
-      <button class="tab" data-tab="screener">スクリーナー</button>
-      <button class="tab" data-tab="holdings">保有株</button>
-      <button class="tab" data-tab="paper">ペーパートレード</button>
-      <button class="tab" data-tab="review">答え合わせ</button>
-      <button class="tab" data-tab="backtest">バックテスト</button>
-    </nav>
   </header>
+
+  <nav class="bottomnav" aria-label="メイン">
+    <button class="tab" data-tab="watch"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l9-7 9 7"></path><path d="M5 10v10h14V10"></path></svg>ホーム</button>
+    <button class="tab" data-tab="screener"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-4-4"></path></svg>探す</button>
+    <button class="tab" data-tab="holdings"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6" width="18" height="14" rx="2"></rect><path d="M8 6V4h8v2"></path></svg>保有株</button>
+    <button class="tab" data-tab="perf"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V10"></path><path d="M10 20V4"></path><path d="M16 20v-7"></path><path d="M22 20H2"></path></svg>成績</button>
+  </nav>
 
   <div id="mode-banner" class="mode-banner" hidden></div>
   <main>
@@ -44,63 +44,21 @@
     <div id="view-watch" class="view">
       <section id="regime" class="regime"></section>
       <section>
-        <h2>今日の狙い目 <small>ウォッチリストからスコア20以上</small></h2>
+        <div class="sec-title"><h2 id="picks-title">今日のAIピック</h2><span id="picks-sub" class="muted small">5日後に市場平均を上回る予測</span></div>
         <div id="picks" class="picks"></div>
       </section>
 
       <section>
-        <div class="sec-head">
-          <h2>ウォッチリスト</h2>
-          <form id="add-form" class="add">
-            <input id="add-sym" placeholder="コードか銘柄名（例: 7203、トヨタ）" autocomplete="off" />
-            <button>追加</button>
-          </form>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>銘柄</th><th class="num">現在値</th><th class="num">前日比</th><th class="hide-sm">30日</th><th>スコア</th><th class="hide-sm">判定</th></tr></thead>
-            <tbody id="rows"></tbody>
-          </table>
-        </div>
+        <div class="sec-title"><h2>ウォッチリスト</h2><span class="muted small" id="watch-sort">AI予測の高い順</span></div>
+        <div id="rows" class="list"></div>
+        <form id="add-form" class="add">
+          <label class="sr" for="add-sym">銘柄を追加</label>
+          <input id="add-sym" placeholder="コードか銘柄名で追加（例: 7203、トヨタ）" autocomplete="off" />
+          <button>追加</button>
+        </form>
       </section>
 
-      <section id="detail" class="detail" hidden>
-        <div class="d-head">
-          <div>
-            <h2 id="d-title"></h2>
-            <div id="d-price"></div>
-          </div>
-          <button id="d-close" class="icon-btn" aria-label="閉じる">✕</button>
-        </div>
-        <div id="d-events"></div>
-        <canvas id="chart"></canvas>
-        <div class="legend"><i class="l5"></i>5日 <i class="l25"></i>25日 <i class="l75"></i>75日 <i class="lbb"></i>ボリンジャー±2σ</div>
 
-        <div class="ai">
-          <div class="ai-head"><h3>✦「なぜ今？」解説</h3><div class="ai-btns"><button id="d-ai-chat" class="mini ghost">Claudeアプリで聞く</button><button id="d-ai-btn" class="mini" hidden>AIに聞く</button></div></div>
-          <div id="d-ai-text"></div>
-        </div>
-
-        <div class="d-grid">
-          <div>
-            <div id="d-aipred"></div>
-            <h3 id="d-score"></h3>
-            <div id="d-levels"></div>
-            <ul id="d-signals" class="signals"></ul>
-            <h3 class="mt">ニュース</h3>
-            <ul id="d-news" class="news"></ul>
-          </div>
-          <div class="alerts">
-            <h3>価格アラート</h3>
-            <label>上抜けで通知 <input id="al-above" type="number" step="any" inputmode="decimal" /></label>
-            <label>下抜けで通知 <input id="al-below" type="number" step="any" inputmode="decimal" /></label>
-            <button id="al-save">保存</button>
-            <button id="d-remove" class="ghost danger">ウォッチリストから外す</button>
-            <button id="d-hold" class="ghost">＋保有株に登録</button>
-            <button id="d-universe" class="ghost" hidden>自動取得の対象に追加をリクエスト</button>
-          </div>
-        </div>
-      </section>
     </div>
 
     <!-- スクリーナー -->
@@ -165,6 +123,12 @@
     </div>
 
     <!-- ペーパートレード -->
+    <div id="perf-seg" class="seg" role="tablist" hidden>
+      <button role="tab" data-perf="review">答え合わせ</button>
+      <button role="tab" data-perf="paper">仮想口座</button>
+      <button role="tab" data-perf="backtest">検証</button>
+    </div>
+
     <div id="view-paper" class="view" hidden>
       <section>
         <h2>AI予測の仮想口座 <small>AIの予測通りに機械的に売買した記録</small></h2>
@@ -197,6 +161,43 @@
     </div>
 
     <p class="disclaimer">株価ハックの判定・解説は過去データにもとづく機械的なもので、投資助言ではありません。売買の判断はご自身の責任で行ってください。株価は取引時間中5分ごと（全銘柄は約15分ごと）の更新で、データ元の都合で約20分遅れです。</p>
+      <section id="detail" class="detail" hidden role="dialog" aria-label="銘柄の詳細">
+      <div class="d-head">
+        <div>
+          <h2 id="d-title"></h2>
+          <div id="d-price"></div>
+        </div>
+        <button id="d-close" class="icon-btn" aria-label="閉じる">✕</button>
+      </div>
+      <div id="d-events"></div>
+      <canvas id="chart"></canvas>
+      <div class="legend"><i class="l5"></i>5日 <i class="l25"></i>25日 <i class="l75"></i>75日 <i class="lbb"></i>ボリンジャー±2σ</div>
+      <div id="d-aipred"></div>
+
+      <div class="ai">
+        <div class="ai-head"><h3>✦「なぜ今？」解説</h3><div class="ai-btns"><button id="d-ai-chat" class="mini ghost">Claudeアプリで聞く</button><button id="d-ai-btn" class="mini" hidden>AIに聞く</button></div></div>
+        <div id="d-ai-text"></div>
+      </div>
+
+      <div class="d-grid">
+        <div>
+          <h3 id="d-score"></h3>
+          <div id="d-levels"></div>
+          <ul id="d-signals" class="signals"></ul>
+          <h3 class="mt">ニュース</h3>
+          <ul id="d-news" class="news"></ul>
+        </div>
+        <div class="alerts">
+          <h3>価格アラート</h3>
+          <label>上抜けで通知 <input id="al-above" type="number" step="any" inputmode="decimal" /></label>
+          <label>下抜けで通知 <input id="al-below" type="number" step="any" inputmode="decimal" /></label>
+          <button id="al-save">保存</button>
+          <button id="d-remove" class="ghost danger">ウォッチリストから外す</button>
+          <button id="d-hold" class="ghost">＋保有株に登録</button>
+          <button id="d-universe" class="ghost" hidden>自動取得の対象に追加をリクエスト</button>
+        </div>
+      </div>
+    </section>
   </main>
 
   <dialog id="settings">

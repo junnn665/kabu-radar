@@ -30,7 +30,7 @@ export function drawChart(canvas, candles, ind, { bars = 90 } = {}) {
   const y = (v) => padT + (1 - (v - lo) / (hi - lo)) * (priceH - padT);
 
   const up = css('--up'), down = css('--down'), grid = css('--grid'), muted = css('--muted');
-  ctx.font = '10px "JetBrains Mono", monospace';
+  ctx.font = '10px "IBM Plex Mono", monospace';
   ctx.fillStyle = muted; ctx.strokeStyle = grid; ctx.lineWidth = 1;
 
   // グリッド＋価格目盛り

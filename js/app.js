@@ -362,28 +362,31 @@ function eventBadges(s) {
 }
 const eventChips = (s) => eventBadges(s).map((b) => `<span class="ev ${b.days <= 3 ? 'hot' : ''}">${b.kind === 'earn' ? '📅' : '💰'} ${esc(b.text)}</span>`).join('');
 
+const PERF_TABS = ['review', 'paper', 'backtest'];
 function render() {
-  document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('on', t.dataset.tab === state.settings.tab));
-  document.querySelectorAll('.view').forEach((v) => (v.hidden = v.id !== `view-${state.settings.tab}`));
+  const st = state.settings;
+  if (PERF_TABS.includes(st.tab)) { st.perfTab = st.tab; st.tab = 'perf'; } // 旧タブ名からの移行
+  const perfTab = PERF_TABS.includes(st.perfTab) ? st.perfTab : 'review';
+  const viewId = st.tab === 'perf' ? perfTab : st.tab;
+  document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('on', t.dataset.tab === st.tab));
+  document.querySelectorAll('.view').forEach((v) => (v.hidden = v.id !== `view-${viewId}`));
+  $('#perf-seg').hidden = st.tab !== 'perf';
+  document.querySelectorAll('[data-perf]').forEach((b) => b.classList.toggle('on', b.dataset.perf === perfTab));
   const mode = state.settings.weightMode === 'base' ? '' : state.settings.weightMode === 'tuned' ? '自動調整' : 'カスタム';
   const style = state.settings.style !== 'balanced' ? STYLES[state.settings.style].label.replace(/（.*/, '') : '';
   $('#wmode').textContent = [mode, style].filter(Boolean).join('・');
-  ({ watch: renderWatch, screener: renderScreener, holdings: renderHoldings, paper: renderPaper, review: renderReview, backtest: renderBacktest })[state.settings.tab]();
+  ({ watch: renderWatch, screener: renderScreener, holdings: renderHoldings, paper: renderPaper, review: renderReview, backtest: renderBacktest })[viewId]();
+  renderDetail();
 }
 
 function renderRegime() {
   const m = state.server.market;
   if (!m) { $('#regime').innerHTML = ''; return; }
   const idx = m.indices || {};
-  const chip = (k, label) => idx[k] ? `<span class="idx"><small>${label}</small><b class="mono">${fmt(idx[k].price)}</b><i class="${sign(idx[k].changePct)} mono">${pct(idx[k].changePct)}</i></span>` : '';
-  const reg = (mkt, label) => {
-    const r = m.regime?.[mkt];
-    if (!r) return '';
-    return `<div class="reg ${r.state.key}"><b>${label}：${r.state.label}</b>${r.penalty && state.settings.marketFilter ? `<span>買いシグナルを −${r.penalty}点</span>` : ''}${r.notes.length ? `<small>${r.notes.map(esc).join('・')}</small>` : ''}</div>`;
-  };
-  $('#regime').innerHTML = `<div class="idxs">${chip('N225', '日経平均')}${chip('TOPIX', 'TOPIX(ETF)')}${chip('SPX', 'S&P500')}${chip('USDJPY', 'ドル円')}</div>
-    <div class="regs one">${reg('JP', '地合い')}</div>
-    <small class="muted">${state.settings.marketFilter ? '地合いフィルター：オン（悪い日は買いシグナルを割り引き）' : '地合いは参考表示です（割り引きはオフ。相場が悪い日の押し目はむしろ反発しやすいため）'}</small>`;
+  const tile = (k, label) => idx[k] ? `<div class="tile"><small>${label}</small><b class="mono">${fmt(idx[k].price)}</b><i class="mono ${sign(idx[k].changePct)}">${pct(idx[k].changePct)}</i></div>` : '';
+  const r = m.regime?.JP;
+  $('#regime').innerHTML = `<div class="tiles">${tile('N225', '日経平均')}${tile('TOPIX', 'TOPIX')}
+    ${r ? `<div class="tile" title="${esc(r.notes.join('・'))}"><small>地合い</small><b class="reg-${r.state.key}">${r.state.label}</b></div>` : ''}</div>`;
 }
 
 function levelLine(s, compact = false) {
@@ -407,53 +410,84 @@ function renderWatch() {
   renderRegime();
   renderPicks();
   renderTable();
-  renderDetail();
+}
+
+const reasonChips = (s, n = 2) => (state.server.ai_reasons?.reasons?.[s] || []).filter((r) => r[1] > 0).slice(0, n)
+  .map(([k, , v]) => `<span class="chip-soft">${esc(FEATURE_JA[k] || k)}${reasonValue(k, v) ? `：${esc(reasonValue(k, v))}` : ''}</span>`).join('');
+const segName = (seg) => ({ P: 'プライム', S: 'スタンダード', G: 'グロース' }[seg] || '');
+const predText = (p, d = 1) => `${p > 0 ? '+' : ''}${p.toFixed(d)}%`;
+
+// 今日のAIピック：売買代金のある全銘柄から、AI予測の高い順（同じ業種は2銘柄まで）
+function aiPicks(n = 5) {
+  const rows = (state.server.screener?.rows || []).filter((r) => r.liquid && r.pred != null).sort((a, b) => b.pred - a.pred);
+  const out = [], per = {};
+  for (const r of rows) {
+    const k = r.sector || '-';
+    if ((per[k] || 0) >= 2) continue;
+    per[k] = (per[k] || 0) + 1;
+    out.push(r);
+    if (out.length >= n) break;
+  }
+  return out;
 }
 
 function renderPicks() {
-  const ranked = state.settings.watchlist
-    .filter((s) => state.analyses[s])
-    .map((s) => ({ s, a: state.analyses[s] }))
-    .filter(({ a }) => LEVEL[a.verdict.key] >= 2)
-    .sort((x, y) => (useAI() ? (y.a.ai?.pred ?? -99) - (x.a.ai?.pred ?? -99) : y.a.score - x.a.score))
-    .slice(0, 4);
+  const picks = useAI() ? aiPicks(5) : [];
+  if (picks.length) {
+    $('#picks-title').textContent = '今日のAIピック';
+    $('#picks-sub').textContent = '5日後に市場平均を上回る予測・高い順';
+    const [top, ...rest] = picks;
+    $('#picks').innerHTML = `
+      <button class="hero" data-scr="${esc(top.sym)}">
+        <div class="hero-head">
+          <div><div class="code mono">${esc(top.sym)}${top.seg ? `・${segName(top.seg)}` : ''}</div><div class="hero-name">${esc(top.name)}</div></div>
+          <div class="hero-ai"><b class="mono">${predText(top.pred)}</b><small>AI予測・${topPct(top.aiRank)}</small></div>
+        </div>
+        <div class="chips">${reasonChips(top.sym)}</div>
+        <div class="hero-foot">
+          <span class="mono">${fmt(top.price)} <i class="${sign(top.changePct)}">${pct(top.changePct)}</i></span>
+          ${top.stop ? `<span class="muted small">損切り ${fmt(top.stop)} ／ 利確 ${fmt(top.target)}</span>` : ''}
+        </div>
+      </button>
+      ${rest.map((r) => `<button class="row" data-scr="${esc(r.sym)}">
+        <span class="row-main"><span class="row-name">${esc(r.name)}</span><span class="code mono">${esc(r.sym)}</span></span>
+        <span class="row-ai mono">${predText(r.pred)}</span>
+      </button>`).join('')}`;
+    return;
+  }
+  // AI予測が無いとき（デモなど）は、ウォッチリストのシグナル点数で
+  $('#picks-title').textContent = '今日の狙い目';
+  $('#picks-sub').textContent = 'ウォッチリストから点数20以上';
+  const ranked = state.settings.watchlist.filter((s) => state.analyses[s])
+    .map((s) => ({ s, a: state.analyses[s] })).filter(({ a }) => LEVEL[a.verdict.key] >= 2)
+    .sort((x, y) => y.a.score - x.a.score).slice(0, 4);
   $('#picks').innerHTML = ranked.length
-    ? ranked.map(({ s, a }) => {
-        const q = state.quotes[s];
-        return `<button class="pick ${a.verdict.key}" data-sym="${esc(s)}">
-          <div class="pick-head"><span class="sym">${esc(s)}</span><span class="badge ${a.verdict.key}">${a.verdict.label}</span></div>
-          <div class="pick-name">${esc(nameOf(s))}</div>
-          <div class="pick-price mono">${fmt(q?.price)} <span class="${sign(q?.changePct)}">${pct(q?.changePct)}</span></div>
-          <div class="evs">${eventChips(s)}</div>
-          ${levelLine(s, true)}
-          <div class="pick-score">${useAI() && a.ai ? `<span class="mono">${a.ai.pred > 0 ? '+' : ''}${a.ai.pred.toFixed(1)}%</span><small>AI予測</small>` : `<span class="mono">${a.score}</span><small>/100</small>`}</div>
-          <ul>${useAI() && state.server.ai_reasons?.reasons?.[s]
-            ? state.server.ai_reasons.reasons[s].filter((r) => r[1] > 0).slice(0, 2).map(([k, , v]) => `<li>${esc(FEATURE_JA[k] || k)}${reasonValue(k, v) ? `：${esc(reasonValue(k, v))}` : ''}</li>`).join('')
-            : a.signals.filter((x) => x.weight > 0).slice(0, 3).map((x) => `<li>${esc(x.label)}</li>`).join('')}</ul>
-        </button>`;
-      }).join('')
-    : `<p class="empty">ウォッチリストに条件を満たす銘柄はありません。<a href="#" data-goto="screener">スクリーナー</a>で全銘柄から探せます。</p>`;
+    ? ranked.map(({ s, a }) => `<button class="row" data-sym="${esc(s)}">
+        <span class="row-main"><span class="row-name">${esc(nameOf(s))}</span><span class="code mono">${esc(s)}</span></span>
+        <span class="row-ai mono">${a.score}点</span></button>`).join('')
+    : `<p class="empty">いまは条件を満たす銘柄がありません。<a href="#" data-goto="screener">探す</a>から全銘柄を見られます。</p>`;
 }
 
 function meter(sc) {
   return `<div class="meter"><i style="--v:${(sc + 100) / 2}%" class="${sc >= 0 ? 'pos' : 'neg'}"></i></div><span class="mono sc">${sc}</span>`;
 }
 
+// ウォッチリスト：AI予測の高い順
 function renderTable() {
-  $('#rows').innerHTML = state.settings.watchlist.map((s) => {
+  const ai = useAI();
+  $('#watch-sort').textContent = ai ? 'AI予測の高い順' : '';
+  const list = [...state.settings.watchlist].sort((x, y) => (ai ? (aiOf(y)?.pred ?? -99) - (aiOf(x)?.pred ?? -99) : 0));
+  $('#rows').innerHTML = list.map((s) => {
     const q = state.quotes[s], a = state.analyses[s], cs = state.candles[s];
-    const spark = cs?.length ? sparkline(cs.slice(-30).map((c) => c.close)) : '';
     const flash = q?.flash > 0 ? 'flash-up' : q?.flash < 0 ? 'flash-down' : '';
     const failed = cs && !cs.length;
-    return `<tr data-sym="${esc(s)}" class="${state.selected === s ? 'sel' : ''}">
-      <td><div class="sym">${esc(s)}</div><div class="nm">${esc(nameOf(s))}</div><div class="evs">${eventChips(s)}</div></td>
-      <td class="mono num ${flash}">${fmt(q?.price)}</td>
-      <td class="mono num ${sign(q?.changePct)}">${pct(q?.changePct)}</td>
-      <td class="hide-sm">${spark}</td>
-      <td>${a && !failed ? (useAI() && a.ai ? aiLabel(a.ai) : meter(a.score)) + `<div class="show-sm"><span class="badge ${a.verdict.key}">${a.verdict.label}</span></div>` : ''}</td>
-      <td class="hide-sm">${failed ? '<span class="muted">取得不可</span>' : a ? `<span class="badge ${a.verdict.key}">${a.verdict.label}</span>` : '<span class="muted">読込中</span>'}</td>
-    </tr>`;
-  }).join('');
+    const p = aiOf(s);
+    return `<button class="wrow ${state.selected === s ? 'sel' : ''}" data-sym="${esc(s)}">
+      <span class="row-main"><span class="row-name">${esc(nameOf(s))}</span><span class="code mono">${esc(s)}</span>${eventChips(s) ? `<span class="evs">${eventChips(s)}</span>` : ''}</span>
+      <span class="wprice mono ${flash}">${failed ? '<span class="muted small">取得不可</span>' : `${fmt(q?.price)}<i class="${sign(q?.changePct)}">${pct(q?.changePct)}</i>`}</span>
+      <span class="wai mono ${p ? sign(p.pred) : ''}">${ai && p ? predText(p.pred) : a && !failed ? `${a.score}点` : '—'}</span>
+    </button>`;
+  }).join('') || '<p class="empty">ウォッチリストは空です。下の欄から追加できます。</p>';
 }
 
 function symbolStats(s) {
@@ -487,7 +521,7 @@ function renderDetail() {
   const mr = state.server.model?.report;
   $('#d-aipred').innerHTML = a?.ai ? `<div class="aipred">
       <small>AI予測（5営業日後・市場平均との差）</small>
-      <b class="mono ${sign(a.ai.pred)}">${a.ai.pred > 0 ? '+' : ''}${a.ai.pred.toFixed(2)}%</b>
+      <b class="mono ${a.ai.pred >= 0 ? 'aiup' : 'down'}">${a.ai.pred > 0 ? '+' : ''}${a.ai.pred.toFixed(2)}%</b>
       <span class="aipos">${a.ai.rank != null ? `売買代金のある銘柄の中で${topPct(a.ai.rank)}` : '売買代金が少ないため順位の対象外'}</span>
       ${reasonsHtml(s)}
       ${mr?.top2pct ? `<small class="muted">このモデルの上位2%は、学習に使っていない期間で平均${pctf(mr.top2pct.excess, 2)}・勝率${Math.round(mr.top2pct.win * 100)}%（${mr.from}〜）</small>` : ''}
@@ -505,7 +539,7 @@ function renderDetail() {
   if (cached) { text = cached.text; note = `AI（あなたのキー）・${cached.date}`; }
   else if (srvFresh) { text = srv.text; note = `AI（${srv.source || '自動生成'}）・${srv.date}`; }
   else if (a) {
-    text = ruleExplain({ score: a.score, verdict: a.verdict.label, signals: a.signals, stats: us?.stats || {}, events: eventsOf(s), today: todayJst() });
+    text = ruleExplain({ score: a.score, verdict: verdictOf(a.score).label, signals: a.signals, stats: us?.stats || {}, events: eventsOf(s), today: todayJst() });
     note = '自動まとめ（AIなし・無料）';
   }
   $('#d-ai-text').innerHTML = state.aiBusy
@@ -716,7 +750,8 @@ function holdingView(h) {
 }
 
 function renderHoldings() {
-  const list = state.settings.holdings.map(holdingView);
+  // AI予測の高い順（予測の無い銘柄は最後）
+  const list = state.settings.holdings.map(holdingView).sort((a, b) => (b.ai?.pred ?? -99) - (a.ai?.pred ?? -99));
   const fx = fxRate();
   const tot = { JPY: { v: 0, c: 0 }, USD: { v: 0, c: 0 } };
   for (const h of list) if (h.value != null) { tot[h.cur].v += h.value; tot[h.cur].c += h.cost * h.shares; }
@@ -928,9 +963,14 @@ function renderBacktest() {
 // ================= 操作 =================
 function select(s) {
   state.selected = s;
-  state.settings.tab = 'watch';
+  document.body.classList.add('sheet-open');
   render();
-  $('#detail').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  $('#detail').scrollTop = 0;
+}
+function closeDetail() {
+  state.selected = null;
+  document.body.classList.remove('sheet-open');
+  render();
 }
 
 async function openSymbol(s) {
@@ -1013,8 +1053,7 @@ $('#d-remove').addEventListener('click', () => {
   state.settings.watchlist = state.settings.watchlist.filter((x) => x !== s);
   delete state.settings.alerts[s];
   store.save(state.settings);
-  state.selected = null;
-  render();
+  closeDetail();
 });
 $('#d-universe').addEventListener('click', () => {
   const s = state.selected;
@@ -1061,7 +1100,15 @@ document.addEventListener('change', (e) => {
 });
 document.addEventListener('click', (e) => { if (e.target.closest('[data-mprice]')) e.stopPropagation(); }, true);
 $('#scr-funda').addEventListener('change', (e) => { state.scr.funda = e.target.value; renderScreener(); });
-$('#d-close').addEventListener('click', () => { state.selected = null; render(); });
+$('#d-close').addEventListener('click', closeDetail);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && state.selected) closeDetail(); });
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-perf]');
+  if (!b) return;
+  state.settings.perfTab = b.dataset.perf;
+  save();
+  render();
+});
 $('#d-ai-btn').addEventListener('click', askAi);
 $('#d-ai-chat').addEventListener('click', askInClaudeApp);
 $('#al-save').addEventListener('click', () => {
