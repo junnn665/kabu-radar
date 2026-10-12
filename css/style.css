@@ -270,3 +270,5 @@ td.warns { min-width: 96px; }
 button.wide { width: 100%; margin-top: 10px; }
 .filters label.check { flex: 1 1 100%; }
 .idxs { grid-template-columns: repeat(4, 1fr); }
+
+.mode-banner { background: #7c2d12; color: #fed7aa; padding: 8px 16px; font-size: 13px; text-align: center; }

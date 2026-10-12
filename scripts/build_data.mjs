@@ -85,7 +85,9 @@ async function main() {
     const last = cs.at(-1), prev = cs.at(-2) || last;
     quotes[s] = [r2(last.close), r2(prev.close), last.volume, last.date];
   }
-  writeJson(path.join(OUT, 'quotes.json'), { updatedAt: now.toISOString(), marketOpen: marketOpenJP(), q: quotes });
+  // 祝日は曜日・時刻だけでは分からないので、「今日の日足があるか」も見る
+  const latestBar = Object.values(quotes).map((q) => q[3]).sort().at(-1);
+  writeJson(path.join(OUT, 'quotes.json'), { updatedAt: now.toISOString(), marketOpen: marketOpenJP() && latestBar === jstDate, lastDate: latestBar, q: quotes });
   writeJson(path.join(OUT, 'universe.json'), {
     date: uniDoc.date || null,
     symbols: uniDoc.symbols.filter((u) => history[u.sym]).map((u) => ({ sym: u.sym, name: u.name, seg: u.seg || null, sector: u.sector || null })),

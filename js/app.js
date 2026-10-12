@@ -121,7 +121,7 @@ async function loadCandles(symbols) {
     try {
       state.candles[s] = await state.provider.getDailyCandles(s);
     } catch (e) {
-      toast(`${s}: ${e.message}`, 'err');
+      if (!state.provider.unavailable) toast(`${s}: ${e.message}`, 'err');
       state.candles[s] = [];
     }
     delete state.symStats[s];
@@ -203,16 +203,50 @@ async function tick() {
     if (state.provider.static && state.provider.quotesDoc?.updatedAt !== before) { await loadServer(); recomputeAll(); }
     checkHoldings();
     if (refetch.length) loadCandles(refetch);
-    const at = state.provider.quotesDoc?.updatedAt ? new Date(state.provider.quotesDoc.updatedAt) : new Date();
-    $('#updated').textContent = at.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
-    $('#status').className = 'dot live';
+    const recovered = state.provider.unavailable;
+    state.provider.unavailable = false;
+    renderStatus();
+    if (recovered) { await loadServer(); loadCandles(tracked().filter((s) => !state.candles[s]?.length)).then(tick); }
   } catch (e) {
     $('#status').className = 'dot err';
-    toast(`価格の取得に失敗: ${e.message}`, 'err');
+    $('#updated').textContent = '読み込み失敗';
+    toast(`株価データを読み込めませんでした（${e.message}）。1分後に再試行します`, 'err');
   } finally {
     state.busy = false;
   }
   render();
+}
+
+// ヘッダーの状態表示：取引中か、休場中なら「いつの終値か」
+function renderStatus() {
+  const p = state.provider;
+  const banner = $('#mode-banner');
+  if (!p?.static) {
+    $('#status').className = 'dot live';
+    $('#updated').textContent = 'デモ';
+    banner.hidden = false;
+    banner.textContent = 'デモモードです。表示中の株価は架空のシミュレーションで、実際の値ではありません。';
+    return;
+  }
+  if (p.unavailable) {
+    $('#status').className = 'dot err';
+    $('#updated').textContent = '読み込み失敗';
+    banner.hidden = false;
+    banner.textContent = '株価データを読み込めませんでした。通信状況を確認してください（1分ごとに再試行します）。';
+    return;
+  }
+  banner.hidden = true;
+  const doc = p.quotesDoc || {};
+  const last = Object.values(doc.q || {})[0]?.[3];
+  const at = doc.updatedAt ? new Date(doc.updatedAt) : null;
+  const md = (d) => `${+d.slice(5, 7)}/${+d.slice(8, 10)}`;
+  if (doc.marketOpen) {
+    $('#status').className = 'dot live';
+    $('#updated').textContent = at ? `${at.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })} 時点` : '';
+  } else {
+    $('#status').className = 'dot';
+    $('#updated').textContent = last ? `休場中・${md(last)}終値` : '休場中';
+  }
 }
 
 async function restart() {
@@ -220,6 +254,7 @@ async function restart() {
   state.provider = await makeProvider(state.settings);
   Object.assign(state, { candles: {}, quotes: {}, analyses: {}, prevVerdict: {}, symStats: {}, server: {}, local: {} });
   $('#provider').textContent = state.provider.name;
+  renderStatus();
   document.documentElement.dataset.up = state.settings.upColor;
   render();
   await loadServer();
@@ -608,12 +643,14 @@ function renderHoldings() {
   const fx = fxRate();
   const tot = { JPY: { v: 0, c: 0 }, USD: { v: 0, c: 0 } };
   for (const h of list) if (h.value != null) { tot[h.cur].v += h.value; tot[h.cur].c += h.cost * h.shares; }
+  const unpriced = list.filter((h) => h.value == null);
   const jpyAll = tot.JPY.v + (fx ? tot.USD.v * fx : 0), jpyCost = tot.JPY.c + (fx ? tot.USD.c * fx : 0);
   $('#hold-sum').innerHTML = list.length ? `<div class="kpis">
       <div><small>評価額（円換算）</small><b>¥${Math.round(jpyAll).toLocaleString('ja-JP')}</b>${tot.USD.v && fx ? `<small>ドル円 ${fx.toFixed(2)} で換算</small>` : ''}</div>
       <div><small>含み損益</small><b class="${sign(jpyAll - jpyCost)}">${yen(jpyAll - jpyCost)}</b><small>${pctf(jpyCost ? jpyAll / jpyCost - 1 : null)}</small></div>
       <div><small>要注意</small><b class="${list.some((h) => h.warns.some((w) => w.hot)) ? 'down' : ''}">${list.filter((h) => h.warns.length).length}銘柄</b></div>
-    </div>` : '';
+    </div>${unpriced.length ? `<p class="warn">${unpriced.map((h) => esc(h.sym)).join('・')} は株価を取得できないため、合計に含めていません。</p>` : ''}
+    <p class="muted small">損益は「（最新の終値 − 登録した買値）× 株数」です。証券会社の表示と合わない場合は、登録した買値（1株あたりの平均取得単価）と株数を確認してください。手数料・税金は含みません。</p>` : '';
   $('#hold-rows').innerHTML = list.length ? list.map((h) => `<tr data-sym="${esc(h.sym)}">
       <td><div class="sym">${esc(h.sym)}</div><div class="nm">${esc(nameOf(h.sym))}</div><div class="nm show-sm mono">${h.shares.toLocaleString()}株 @${fmt(h.cost)}</div>${h.a ? `<span class="badge ${h.a.verdict.key}">${h.a.verdict.label}</span>` : ''}</td>
       <td class="num small hide-sm"><div class="mono">${h.shares.toLocaleString()}株</div><div class="mono muted">@${fmt(h.cost)}</div></td>

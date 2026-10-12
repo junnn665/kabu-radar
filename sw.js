@@ -1,5 +1,5 @@
-// オフライン対応：画面はキャッシュ優先、データ（data/）はネットワーク優先
-const CACHE = 'kabuka-hack-v5';
+// オフライン対応：常にネットワーク優先、つながらないときだけキャッシュ
+const CACHE = 'kabuka-hack-v6';
 const SHELL = [
   './', 'index.html', 'css/style.css', 'manifest.webmanifest',
   'js/app.js', 'js/providers.js', 'js/signals.js', 'js/indicators.js', 'js/backtest.js', 'js/chart.js', 'js/ai.js', 'js/explain.js', 'js/levels.js', 'js/market.js', 'js/review.js',
@@ -27,12 +27,11 @@ self.addEventListener('fetch', (e) => {
     );
     return;
   }
-  // 画面：キャッシュを返しつつ裏で更新
+  // 画面：常に最新を取りに行き、オフラインのときだけキャッシュを使う
   e.respondWith(
-    caches.match(e.request).then((hit) => {
-      const net = fetch(e.request).then((r) => { if (r.ok) caches.open(CACHE).then((c) => c.put(e.request, r.clone())); return r; }).catch(() => hit);
-      return hit || net;
-    }),
+    fetch(e.request)
+      .then((r) => { if (r.ok) { const copy = r.clone(); caches.open(CACHE).then((c) => c.put(e.request, copy)); } return r; })
+      .catch(() => caches.match(e.request)),
   );
 });
 

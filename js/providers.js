@@ -132,8 +132,17 @@ export class StaticProvider {
 
 export const DEMO_SYMBOLS = Object.keys(DEMO_META);
 
+// 本物のデータが一時的に読めなくても、勝手にデモ（架空の値動き）へは切り替えない。
+// デモになるのは、設定でデモを選んだときと、手元で動かしていてデータが無いときだけ。
 export async function makeProvider(settings) {
   if (settings.provider === 'demo') return new DemoProvider();
   const st = new StaticProvider();
-  return (await st.available()) ? st : new DemoProvider();
+  for (let i = 0; i < 3; i++) {
+    if (await st.available()) return st;
+    await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
+  }
+  const local = typeof location === 'undefined' || /^(localhost|127\.|0\.0\.0\.0)/.test(location.hostname) || location.protocol === 'file:';
+  if (local) return new DemoProvider();
+  st.unavailable = true; // 画面に「読み込めません」と出して、次の更新で再挑戦する
+  return st;
 }
