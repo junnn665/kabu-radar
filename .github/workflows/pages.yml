@@ -84,7 +84,7 @@ jobs:
           TRAIN=$(python -c "import json;m=json.load(open('raw/fetch_meta.json'));print('--train' if m['history']['mode']=='full' else '')")
           EXP=${{ inputs.experiment && '--experiment' || '' }}
           python scripts/model.py --history raw/history.json --universe raw/universe.json --market raw/market.json --cache cache --out raw $TRAIN $EXP 2>&1 | tee model.log
-          grep "^EXP " model.log | while read -r line; do echo "::notice title=設計の比較::$line"; done
+          (grep "^EXP " model.log || true) | while read -r line; do echo "::notice title=設計の比較::$line"; done
           echo "::notice title=AI予測::$(tail -n 1 model.log)"
 
       - name: AI予測のエラーを表示
