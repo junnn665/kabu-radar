@@ -262,6 +262,13 @@ def main():
     history = load(args.history, {})
     universe = load(args.universe, {}).get("symbols", [])
     market = load(args.market, {})
+    model_path = os.path.join(args.cache, "model.txt")
+    meta_path = os.path.join(args.cache, "model_meta.json")
+    predict_only = not args.train and not args.experiment and os.path.exists(model_path) \
+        and load(meta_path, {}).get("variant", "A_all") == DEFAULT_VARIANT
+    full_history = history
+    if predict_only:  # 予測だけなら直近300営業日あれば足りる（52週高値などの計算に250日使う）
+        history = {s: {k: v[-300:] for k, v in b.items()} for s, b in history.items()}
     df, sectors = build_frame(history, universe, market)
     df = add_target(df)
     if args.experiment:
@@ -278,8 +285,6 @@ def main():
     cols = feature_cols(df, variant)
     print(f"特徴量 {len(cols)}項目 / {df['sym'].nunique():,}銘柄 / {df['date'].nunique()}営業日 / {len(df):,}行 ({time.time() - t0:.0f}s)", flush=True)
 
-    model_path = os.path.join(args.cache, "model.txt")
-    meta_path = os.path.join(args.cache, "model_meta.json")
     report = load(os.path.join(args.cache, "model_report.json"), None)
     model = None
     if not args.train and os.path.exists(model_path):
@@ -288,6 +293,10 @@ def main():
             model = lgb.Booster(model_file=model_path)
         else:
             print("特徴量が変わったので学習し直します")
+    if model is None and predict_only:  # 学び直しには全期間が要るので作り直す
+        df, sectors = build_frame(full_history, universe, market)
+        df = add_target(df)
+        cols = feature_cols(df, variant)
     if model is None:
         if not args.no_eval:
             report = evaluate(df, cols, label)
