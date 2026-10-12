@@ -272,6 +272,7 @@ def estimate_exdiv(div_dates, today):
 
 
 def info_of(yft):
+    time.sleep(0.6)  # 取得しすぎると Yahoo に一時的に止められるため間隔をあける
     info = yf.Ticker(yft).info or {}
     per, pbr = num(info.get("trailingPE")), num(info.get("priceToBook"))
     return {"per": per if per and 0 < per < 1000 else None, "fper": num(info.get("forwardPE")),
@@ -427,8 +428,8 @@ def main():
     if daily:
         # PER・PBR は1週間で一巡するよう、毎日1/7ずつ取り直す（未取得・古い順）
         order = sorted(symbols, key=lambda u: funda.get(u["sym"], {}).get("updated") or "")
-        target = [u["yf"] for u in order[: max(300, len(symbols) // 7 + 1)]]
-        for t, info in pmap(info_of, target).items():
+        target = [u["yf"] for u in order[: len(symbols) // 7 + 1]]
+        for t, info in pmap(info_of, target, workers=2).items():
             funda[by_yf[t]] = {**funda.get(by_yf[t], {}), **info, "updated": today.isoformat()}
     save_json(os.path.join(args.out, "events.json"), {"date": today.isoformat() if daily else prev_events.get("date"),
                                                      "events": events, "earningsRaw": earnings})

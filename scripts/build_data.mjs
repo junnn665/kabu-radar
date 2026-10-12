@@ -22,7 +22,7 @@ const MAX_NEW_PAPER = 8;    // 1回の更新で新しく買う上限
 const MAX_OPEN_PAPER = 30;  // 同時に持つ上限
 const PUBLISH_BARS = 260;   // サイトに出す日足（学習用には約3年分を持っている）
 // AI予測で売買する仮想口座のルール（予測期間が5営業日なので最長5日）
-const AI_RULES = { entryRank: 0.99, hold: 5, takeProfit: 0.1, stopLoss: -0.05, maxNew: 5, maxOpen: 20 };
+const AI_RULES = { entryRank: 0.99, hold: 5, takeProfit: 0.1, stopLoss: -0.05, maxNew: 5, maxOpen: 20, maxPerSector: 2 };
 
 const readJson = (p, d) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return d; } };
 const writeJson = (p, v) => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, JSON.stringify(v)); };
@@ -240,8 +240,13 @@ async function main() {
     const held = new Set(paperAI.open.map((p) => p.sym));
     const cands = rows.filter((r) => r.liquid && r.aiRank >= AI_RULES.entryRank && r.pred > 0 && !held.has(r.sym)
       && !paperAI.closed.some((c) => c.sym === r.sym && c.exitDate === quotes[r.sym][3])).sort((a, b) => b.pred - a.pred);
+    const perSector = {};
+    for (const p of paperAI.open) { const sec = rowBy[p.sym]?.sector || '-'; perSector[sec] = (perSector[sec] || 0) + 1; }
     for (const r of cands) {
       if (openedAI.length >= AI_RULES.maxNew || paperAI.open.length >= AI_RULES.maxOpen) break;
+      const sec = r.sector || '-';
+      if ((perSector[sec] || 0) >= AI_RULES.maxPerSector) continue; // 同じ業種ばかりにならないよう分散
+      perSector[sec] = (perSector[sec] || 0) + 1;
       const p = { sym: r.sym, name: r.name, entryDate: quotes[r.sym][3], entryPrice: r.price, pred: r.pred, aiRank: r.aiRank, lastPrice: r.price, ret: 0, held: 0 };
       paperAI.open.push(p); openedAI.push(p);
     }

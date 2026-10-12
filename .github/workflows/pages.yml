@@ -7,7 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       force_daily:
-        description: '日足1年分・決算予定日・財務・ニュースを今すぐ取り直す'
+        description: '日足3年分・決算予定日・財務・ニュースを今すぐ取り直し、AIを学習し直す'
+        type: boolean
+        default: false
+      experiment:
+        description: 'AI予測モデルの設計を比較する（時間がかかります）'
         type: boolean
         default: false
   schedule:
@@ -73,10 +77,14 @@ jobs:
         id: model
         if: steps.fetch.outcome == 'success'
         continue-on-error: true
+        env:
+          MODEL_VARIANT: ${{ vars.MODEL_VARIANT || 'A_all' }}
         run: |
           set -o pipefail
           TRAIN=$(python -c "import json;m=json.load(open('raw/fetch_meta.json'));print('--train' if m['history']['mode']=='full' else '')")
-          python scripts/model.py --history raw/history.json --universe raw/universe.json --market raw/market.json --cache cache --out raw $TRAIN 2>&1 | tee model.log
+          EXP=${{ inputs.experiment && '--experiment' || '' }}
+          python scripts/model.py --history raw/history.json --universe raw/universe.json --market raw/market.json --cache cache --out raw $TRAIN $EXP 2>&1 | tee model.log
+          grep "^EXP " model.log | while read -r line; do echo "::notice title=設計の比較::$line"; done
           echo "::notice title=AI予測::$(tail -n 1 model.log)"
 
       - name: AI予測のエラーを表示

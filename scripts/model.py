@@ -154,29 +154,50 @@ def build_frame(history, universe, market):
     return df, sectors
 
 
-FEATURES_EXCLUDE = {"date", "sym", "fwd", "turn", "ex"}
+FEATURES_EXCLUDE = {"date", "sym", "fwd", "turn", "ex", "ex_sec", "liquid"}
+MARKET_COLS = ("n225_ret5", "n225_dev25", "vix")
+
+# 比較する設計。target: 'market'＝市場平均との差 / 'sector'＝同じ業種の平均との差（業種の当たり外れを除いて銘柄選びだけを学ぶ）
+VARIANTS = {
+    "A_all": {"target": "market", "drop": []},
+    "B_no_market": {"target": "market", "drop": list(MARKET_COLS)},
+    "C_no_market_sector": {"target": "market", "drop": list(MARKET_COLS) + ["sector"]},
+    "D_sector_neutral": {"target": "sector", "drop": list(MARKET_COLS)},
+}
+DEFAULT_VARIANT = os.environ.get("MODEL_VARIANT", "A_all")
 
 
 def add_target(df):
     liquid = df["turn"] >= MIN_TURNOVER
-    m = df.loc[liquid & df["fwd"].notna()].groupby("date")["fwd"].mean()
+    ok = liquid & df["fwd"].notna()
+    m = df.loc[ok].groupby("date")["fwd"].mean()
     df["ex"] = (df["fwd"] - df["date"].map(m)).clip(-0.3, 0.3)
+    ms = df.loc[ok].groupby(["date", "sector"])["fwd"].transform("mean")
+    df["ex_sec"] = np.nan
+    df.loc[ok, "ex_sec"] = (df.loc[ok, "fwd"] - ms).clip(-0.3, 0.3)
     df["liquid"] = liquid
     return df
 
 
-def feature_cols(df):
-    return [c for c in df.columns if c not in FEATURES_EXCLUDE and c != "liquid"]
+def feature_cols(df, variant=None):
+    drop = set((variant or VARIANTS[DEFAULT_VARIANT])["drop"])
+    return [c for c in df.columns if c not in FEATURES_EXCLUDE and c not in drop]
 
 
-def train(df_train, cols):
+def label_col(variant):
+    return "ex_sec" if variant["target"] == "sector" else "ex"
+
+
+def train(df_train, cols, label="ex"):
     import lightgbm as lgb
-    ds = lgb.Dataset(df_train[cols], label=df_train["ex"], categorical_feature=["seg", "sector"], free_raw_data=True)
+    d = df_train[df_train[label].notna()]
+    cats = [c for c in ("seg", "sector") if c in cols]
+    ds = lgb.Dataset(d[cols], label=d[label], categorical_feature=cats, free_raw_data=True)
     return lgb.train(PARAMS, ds, num_boost_round=ROUNDS)
 
 
-def evaluate(df, cols):
-    """ウォークフォワード検証：学習に使っていない期間の成績"""
+def evaluate(df, cols, label="ex", quiet=False):
+    """ウォークフォワード検証：学習に使っていない期間の成績（評価は常に「市場平均との差」）"""
     dates = np.array(sorted(df["date"].unique()))
     usable = df[df["liquid"] & df["ex"].notna()]
     n_days = len(dates)
@@ -190,9 +211,11 @@ def evaluate(df, cols):
         te = usable[usable["date"].isin(test_dates)]
         if len(tr) < MIN_ROWS or not len(te):
             continue
-        model = train(tr, cols)
-        preds.append(pd.DataFrame({"date": te["date"].values, "sym": te["sym"].values, "pred": model.predict(te[cols]), "ex": te["ex"].values, "fwd": te["fwd"].values}))
-        print(f"  検証ブロック {test_dates[0]}〜{test_dates[-1]}: 学習 {len(tr):,}件 → 予測 {len(te):,}件", flush=True)
+        model = train(tr, cols, label)
+        preds.append(pd.DataFrame({"date": te["date"].values, "sym": te["sym"].values, "pred": model.predict(te[cols]), "ex": te["ex"].values,
+                                   "fwd": te["fwd"].values, "sector": te["sector"].values}))
+        if not quiet:
+            print(f"  検証ブロック {test_dates[0]}〜{test_dates[-1]}: 学習 {len(tr):,}件 → 予測 {len(te):,}件", flush=True)
     if not preds:
         return None
     p = pd.concat(preds, ignore_index=True)
@@ -206,8 +229,12 @@ def evaluate(df, cols):
         return {"k": k, "n": int(len(t)), "excess": float(t["ex"].mean()), "win": float((t["fwd"] > 0).mean()),
                 "exWin": float((t["ex"] > 0).mean()), "avg": float(t["fwd"].mean())}
 
-    monthly = p[p["rank"] >= 0.98].assign(m=lambda x: x["date"].str[:7]).groupby("m")["ex"].mean()
+    top2 = p[p["rank"] >= 0.98]
+    monthly = top2.assign(m=lambda x: x["date"].str[:7]).groupby("m")["ex"].mean()
+    # 偏り：上位2%のうち最も多い業種が占める割合（日ごとの平均）
+    conc = top2.groupby("date")["sector"].agg(lambda x: x.value_counts(normalize=True).iloc[0]).mean()
     return {
+        "sectorConcentration": float(conc), "positiveMonths": float((monthly > 0).mean()),
         "from": str(p["date"].min()), "to": str(p["date"].max()), "rows": int(len(p)), "days": int(p["date"].nunique()),
         "ic": float(ic.mean()), "icPositiveDays": float((ic > 0).mean()),
         "deciles": [{"decile": int(r.decile) + 1, "excess": float(r.excess), "win": float(r.win), "n": int(r.n)} for r in dec.itertuples()],
@@ -227,6 +254,7 @@ def main():
     ap.add_argument("--out", default="raw")
     ap.add_argument("--train", action="store_true", help="学習（と検証）も行う。指定しなければ保存済みモデルで予測だけ")
     ap.add_argument("--no-eval", action="store_true")
+    ap.add_argument("--experiment", action="store_true", help="複数の設計を同じ期間で比較して結果を出力")
     args = ap.parse_args()
     t0 = time.time()
     import lightgbm as lgb
@@ -236,7 +264,18 @@ def main():
     market = load(args.market, {})
     df, sectors = build_frame(history, universe, market)
     df = add_target(df)
-    cols = feature_cols(df)
+    if args.experiment:
+        res = {}
+        for name, v in VARIANTS.items():
+            t1 = time.time()
+            r = evaluate(df, feature_cols(df, v), label_col(v), quiet=True)
+            res[name] = {k: r[k] for k in ("ic", "icPositiveDays", "top2pct", "bottom2pct", "sectorConcentration", "positiveMonths")} | {"top20": r["top"][1]}
+            print(f"EXP {name}: IC {r['ic']:.3f} top2% {r['top2pct']['excess'] * 100:+.2f}% win {r['top2pct']['win'] * 100:.0f}% "
+                  f"top20 {r['top'][1]['excess'] * 100:+.2f}% 偏り {r['sectorConcentration'] * 100:.0f}% 月勝率 {r['positiveMonths'] * 100:.0f}% ({time.time() - t1:.0f}s)", flush=True)
+        dump(res, os.path.join(args.out, "experiments.json"))
+    variant = VARIANTS[DEFAULT_VARIANT]
+    label = label_col(variant)
+    cols = feature_cols(df, variant)
     print(f"特徴量 {len(cols)}項目 / {df['sym'].nunique():,}銘柄 / {df['date'].nunique()}営業日 / {len(df):,}行 ({time.time() - t0:.0f}s)", flush=True)
 
     model_path = os.path.join(args.cache, "model.txt")
@@ -245,22 +284,24 @@ def main():
     model = None
     if not args.train and os.path.exists(model_path):
         meta = load(meta_path, {})
-        if meta.get("features") == cols:
+        if meta.get("features") == cols and meta.get("variant", "A_all") == DEFAULT_VARIANT:
             model = lgb.Booster(model_file=model_path)
         else:
             print("特徴量が変わったので学習し直します")
     if model is None:
         if not args.no_eval:
-            report = evaluate(df, cols)
-        usable = df[df["liquid"] & df["ex"].notna()]
+            report = evaluate(df, cols, label)
+            if report:
+                report["variant"] = DEFAULT_VARIANT
+        usable = df[df["liquid"] & df[label].notna()]
         dates = sorted(usable["date"].unique())
         usable = usable[usable["date"] >= dates[max(0, len(dates) - TRAIN_WINDOW)]]
-        model = train(usable, cols)
+        model = train(usable, cols, label)
         os.makedirs(args.cache, exist_ok=True)
         model.save_model(model_path)
         imp = sorted(zip(cols, model.feature_importance("gain")), key=lambda x: -x[1])
         total = sum(v for _, v in imp) or 1
-        dump({"features": cols, "trainedAt": dt.datetime.now(JST).isoformat(), "trainEnd": str(usable["date"].max()),
+        dump({"variant": DEFAULT_VARIANT, "features": cols, "trainedAt": dt.datetime.now(JST).isoformat(), "trainEnd": str(usable["date"].max()),
               "rows": int(len(usable)), "importance": [[k, round(float(v) / total, 4)] for k, v in imp[:15]]}, meta_path)
         if report:
             dump(report, os.path.join(args.cache, "model_report.json"))
