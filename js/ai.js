@@ -65,10 +65,12 @@ export async function explainGithub({ token, model = GH_MODEL_DEFAULT, ctx }) {
       messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: buildPrompt(ctx) }],
     }),
   });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j?.error?.message || j?.message || `HTTP ${r.status}`);
+  const raw = await r.text();
+  let j = {};
+  try { j = JSON.parse(raw); } catch {}
+  if (!r.ok) throw new Error(j?.error?.message || j?.message || `HTTP ${r.status}: ${raw.slice(0, 200)}`);
   const text = (j.choices?.[0]?.message?.content || '').trim();
-  if (!text) throw new Error(`空の応答: ${JSON.stringify(j).slice(0, 300)}`);
+  if (!text) throw new Error(`空の応答 HTTP ${r.status} ${r.headers.get('content-type')}: ${raw.slice(0, 300)}`);
   return text;
 }
 
