@@ -1,6 +1,6 @@
 // 答え合わせ：過去の各営業日に「強い買い」だった銘柄が、その後5営業日でどうなったか。
 // シグナルは日足だけで決まるので、過去分もその場で再現できる（記録を待たずに見られる）。
-import { computeIndicators, signalsAt, scoreOf, BASE_WEIGHTS } from './signals.js';
+import { computeIndicators, signalsAt, scoreOf, BASE_WEIGHTS, STRONG, isLiquid, MIN_TURNOVER } from './signals.js';
 
 const weekStart = (d) => {
   const t = new Date(d + 'T00:00:00Z');
@@ -9,7 +9,7 @@ const weekStart = (d) => {
 };
 
 // series: {sym: candles}, meta: {sym: {name, market}}, index: {JP: candles, US: candles}
-export function computeReview(series, { meta = {}, index = {}, weights = BASE_WEIGHTS, penaltyOf = null, days = 40, horizon = 5, threshold = 40 } = {}) {
+export function computeReview(series, { meta = {}, index = {}, weights = BASE_WEIGHTS, penaltyOf = null, days = 40, horizon = 5, threshold = STRONG, minTurnover = MIN_TURNOVER } = {}) {
   const picks = [];
   const idxClose = Object.fromEntries(Object.entries(index).map(([m, cs]) => [m, new Map((cs || []).map((c) => [c.date, c.close]))]));
   for (const [sym, cs] of Object.entries(series)) {
@@ -20,7 +20,7 @@ export function computeReview(series, { meta = {}, index = {}, weights = BASE_WE
       const ids = signalsAt(ind, i).map((f) => f.id);
       const pen = penaltyOf ? penaltyOf(sym, cs[i].date) : 0;
       const score = Math.max(-100, scoreOf(ids, weights) - pen);
-      if (score < threshold) continue;
+      if (score < threshold || !isLiquid(ind, i, minTurnover)) continue;
       const j = Math.min(i + horizon, cs.length - 1);
       const done = i + horizon <= cs.length - 1;
       const ret = cs[j].close / cs[i].close - 1;

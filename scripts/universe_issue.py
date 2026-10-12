@@ -13,7 +13,8 @@ import sys
 
 import yfinance as yf
 
-PATH = "config/universe.json"
+PATH = "config/universe_extra.json"
+PUBLISHED = "prev/universe.json"  # data ブランチにある自動取得の銘柄一覧
 
 
 def out(result, message):
@@ -24,10 +25,10 @@ def out(result, message):
 
 
 def to_yf(code):
-    # 4桁の数字（または 130A のような英数字4桁）は東証
-    if re.fullmatch(r"\d{4}|\d{3}[A-Z]", code):
+    # 東証のコードは4桁の数字（または 130A のような英数字4桁）
+    if re.fullmatch(r"\d{3}[0-9A-Z]", code):
         return code + ".T", "JP"
-    return code, "US"
+    return None, None
 
 
 def main():
@@ -47,6 +48,15 @@ def main():
         doc = json.load(f)
     syms = doc["symbols"]
     exists = next((u for u in syms if u["sym"] == code), None)
+    try:
+        with open(PUBLISHED, encoding="utf-8") as f:
+            listed = next((u for u in json.load(f)["symbols"] if u["sym"] == code), None)
+    except (OSError, ValueError, KeyError):
+        listed = None
+    if listed and action == "add":
+        return out("noop", f"{listed['name']}（{code}）はすでに自動取得の対象です（東証上場銘柄はすべて対象）。")
+    if listed and action == "remove" and not exists:
+        return out("noop", f"{listed['name']}（{code}）は東証上場銘柄なので外せません。ウォッチリストから外してください。")
 
     if action == "remove":
         if not exists:
@@ -57,6 +67,8 @@ def main():
         if exists:
             return out("noop", f"{exists['name']}（{code}）はすでに対象銘柄です。")
         yft, market = to_yf(code)
+        if not yft:
+            return out("error", f"{code} は東証のコード（4桁）ではありません。日本株のみ対応しています。")
         t = yf.Ticker(yft)
         hist = t.history(period="1mo")
         if hist.empty:
@@ -67,7 +79,7 @@ def main():
                 name = info.get("shortName") or info.get("longName") or code
             except Exception:  # noqa: BLE001
                 name = code
-        syms.append({"sym": code, "yf": yft, "name": name, "market": market})
+        syms.append({"sym": code, "yf": yft, "name": name, "seg": "X"})
         msg = f"{name}（{code}）を対象銘柄に追加しました。数分後のデータ更新から表示されます。"
 
     with open(PATH, "w", encoding="utf-8") as f:

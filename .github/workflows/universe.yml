@@ -21,6 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: 自動取得の銘柄一覧（data ブランチ）
+        run: git clone --depth 1 -b data "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" prev || mkdir -p prev
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -38,7 +40,7 @@ jobs:
         run: |
           git config user.name "kabu-radar-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add config/universe.json
+          git add config/universe_extra.json
           git commit -m "対象銘柄の更新: $MSG (#${{ github.event.issue.number }})"
           git push
           gh workflow run pages.yml --ref main -R "${{ github.repository }}"

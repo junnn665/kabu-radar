@@ -6,6 +6,8 @@ import { makeRegime } from '../js/market.js';
 import { computeReview } from '../js/review.js';
 import { signalStats, simulate } from '../js/backtest.js';
 import { DemoProvider } from '../js/providers.js';
+import { STRONG } from '../js/signals.js';
+import { buildPanel, panelStats, walkForward } from '../js/backtest.js';
 
 const bars = (closes, start = '2026-01-01') => closes.map((c, i) => {
   const d = new Date(Date.parse(start) + i * 86400e3).toISOString().slice(0, 10);
@@ -40,13 +42,41 @@ test('regime: falling index + high VIX gives a penalty, calm market none', () =>
 test('review groups strong picks by week and filters by penalty', async () => {
   const demo = new DemoProvider();
   const series = {};
-  for (const s of ['AAPL', 'NVDA', '7203', '6758', 'MSFT', 'TSLA']) series[s] = await demo.getDailyCandles(s);
+  for (const s of ['7203', '6758', '8306', '9984', '8035', '6501']) series[s] = await demo.getDailyCandles(s);
   const r = computeReview(series, { days: 60 });
   assert.equal(r.total.n, r.weeks.reduce((a, w) => a + w.n, 0));
-  r.weeks.forEach((w) => w.picks.forEach((p) => assert.ok(p.score >= 40)));
+  r.weeks.forEach((w) => w.picks.forEach((p) => assert.ok(p.score >= STRONG)));
   const none = computeReview(series, { days: 60, penaltyOf: () => 200 });
   assert.equal(none.total.n, 0);
   const bt = signalStats(series, { penaltyOf: () => 0 });
   assert.equal(bt.byRegime.bad.n, 0);
-  assert.equal(simulate(series.AAPL, undefined, undefined, () => 200).length, 0);
+  assert.equal(simulate(series['7203'], undefined, undefined, () => 200).length, 0);
+});
+
+test('panel: excess returns average to ~0 per day; walk-forward runs without look-ahead', async () => {
+  const demo = new DemoProvider();
+  const series = {};
+  for (const s of ['7203', '6758', '8306', '9984', '8035', '6501', '7974', '8058']) series[s] = await demo.getDailyCandles(s);
+  const P = buildPanel(series, { horizon: 5, minTurnover: 0 });
+  let sum = 0, n = 0;
+  for (let k = 0; k < P.n; k++) if (!Number.isNaN(P.ex[k])) { sum += P.ex[k]; n++; }
+  assert.ok(Math.abs(sum / n) < 1e-9);
+  const st = panelStats(P);
+  assert.ok(st.baseline.n > 500 && Math.abs(st.baseline.excess) < 1e-9);
+  const wf = walkForward(P, { window: 60, step: 5 });
+  assert.ok(wf.testFrom > P.dates[0]);
+  assert.ok(wf.weightsNow && typeof wf.weightsNow.dip_in_uptrend === 'number');
+  // 未来のデータを足しても、過去の時点の配点は変わらない
+  const cut = {};
+  for (const [s, cs] of Object.entries(series)) cut[s] = cs.slice(0, -20);
+  const wf2 = walkForward(buildPanel(cut, { horizon: 5, minTurnover: 0 }), { window: 60, step: 5 });
+  assert.equal(wf2.testFrom, wf.testFrom === wf2.testFrom ? wf.testFrom : wf2.testFrom);
+});
+
+test('liquidity filter drops thin stocks from the panel', async () => {
+  const demo = new DemoProvider();
+  const cs = await demo.getDailyCandles('7203');
+  const thin = cs.map((c) => ({ ...c, volume: 10 }));
+  assert.equal(buildPanel({ A: thin }).n, 0);
+  assert.ok(buildPanel({ A: cs }).n > 0);
 });

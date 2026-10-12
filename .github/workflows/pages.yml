@@ -1,19 +1,18 @@
 name: Update data & Deploy
 
-# 株価データの取得 → 判定・バックテスト・ペーパートレード更新 → GitHub Pages へ公開
+# 東証の全上場銘柄の株価取得 → 判定・バックテスト・ペーパートレード更新 → GitHub Pages へ公開
 on:
   push:
     branches: [main]
   workflow_dispatch:
     inputs:
       force_daily:
-        description: '決算日・ニュースも今すぐ取り直す'
+        description: '日足1年分・決算予定日・財務・ニュースを今すぐ取り直す'
         type: boolean
         default: false
   schedule:
-    - cron: '7,22,37,52 0-6 * * 1-5'    # 東証の取引時間（JST 9:00〜15:59）
-    - cron: '7,22,37,52 13-21 * * 1-5'  # 米国市場の取引時間（JST 22時台〜翌6時台）
-    - cron: '3 22 * * *'                # 毎朝 JST 7:03（決算日・ニュースの日次更新）
+    - cron: '7,22,37,52 0-6 * * 1-5'  # 東証の取引時間（JST 9:07〜15:52、15分おき）
+    - cron: '3 22 * * 0-4'            # 平日の朝 JST 7:03（全件取り直し・決算予定日・財務・ニュース）
 
 permissions:
   contents: write   # data ブランチへの保存
@@ -28,14 +27,21 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v5
 
-      - name: 前回のデータ（data ブランチ）を取得
+      - name: 前回の状態（data ブランチ）を取得
         run: |
           git clone --depth 1 -b data "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" prev \
             || mkdir -p prev
+
+      - name: 日足キャッシュを復元
+        uses: actions/cache/restore@v4
+        with:
+          path: cache
+          key: hist-${{ github.run_id }}
+          restore-keys: hist-
 
       - uses: actions/setup-node@v5
         with:
@@ -48,14 +54,21 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: 株価・決算日・ニュースを取得（yfinance）
+      - name: 株価・決算予定日・財務・ニュースを取得
         id: fetch
         continue-on-error: true
         run: |
-          pip install --quiet yfinance
-          python scripts/fetch_data.py --prev prev --out raw ${{ inputs.force_daily && '--force-daily' || '' }}
+          pip install --quiet yfinance pandas xlrd openpyxl
+          python scripts/fetch_data.py --prev prev --cache cache --out raw ${{ inputs.force_daily && '--force-daily' || '' }}
 
-      - name: 判定・バックテスト・ペーパートレード・AI解説を生成
+      - name: 日足キャッシュを保存
+        if: steps.fetch.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: cache
+          key: hist-${{ github.run_id }}
+
+      - name: 判定・バックテスト・ペーパートレード・解説を生成
         if: steps.fetch.outcome == 'success'
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -64,30 +77,33 @@ jobs:
           AI_MODEL: ${{ vars.AI_MODEL }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           SITE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+          NODE_OPTIONS: --max-old-space-size=6144
         run: node scripts/build_data.mjs --raw raw --prev prev --out data
 
-      - name: 取得に失敗したら前回のデータを使う
-        if: steps.fetch.outcome != 'success'
-        run: |
-          mkdir -p data
-          cp -r prev/. data/ 2>/dev/null || true
-          rm -rf data/.git
-
-      - name: data ブランチに保存（履歴は残さず最新1コミットのみ）
+      - name: 状態を data ブランチに保存（日足は含めない・最新1コミットのみ）
         if: steps.fetch.outcome == 'success'
         run: |
-          cd data
+          mkdir -p state
+          for f in paper ai notified events news fundamentals universe screener meta; do
+            [ -f "data/$f.json" ] && cp "data/$f.json" state/
+          done
+          cd state
           git init -q -b data
           git add -A
-          git -c user.name="kabu-radar-bot" -c user.email="actions@users.noreply.github.com" commit -qm "data $(date -u +%FT%TZ)"
+          git -c user.name="kabu-radar-bot" -c user.email="actions@users.noreply.github.com" commit -qm "state $(date -u +%FT%TZ)"
           git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" data
-          rm -rf .git
+
+      - name: 取得に失敗したら公開を見送る
+        if: steps.fetch.outcome != 'success'
+        run: |
+          echo "::warning::データ取得に失敗したため、今回は公開を更新しません"
+          exit 1
 
       - name: 公開用ファイルをまとめる
         run: |
           mkdir -p _site
-          cp -r index.html manifest.webmanifest sw.js css js icons config _site/
-          [ -d data ] && cp -r data _site/ || true
+          cp -r index.html manifest.webmanifest sw.js css js icons _site/
+          cp -r data _site/
 
       - uses: actions/upload-pages-artifact@v3
         with:

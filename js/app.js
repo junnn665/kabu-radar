@@ -15,7 +15,7 @@ const DEFAULTS = {
   provider: 'auto',
   apiKey: '',
   interval: 5,
-  watchlist: ['7203', '6758', '8306', '9984', 'AAPL', 'MSFT', 'NVDA', 'TSLA'],
+  watchlist: ['7203', '6758', '8306', '9984', '8035', '6501', '7974', '8058'],
   upColor: 'green',
   alerts: {},
   weightMode: 'base', // base | tuned | custom
@@ -50,7 +50,7 @@ const state = {
   local: {},         // デモ等でブラウザ内計算したもの
   symStats: {},      // 銘柄別バックテストのキャッシュ
   aiBusy: false,
-  scr: { market: 'all', min: 20, q: '', funda: 'all' },
+  scr: { seg: 'all', sector: 'all', min: 20, q: '', funda: 'all', liquid: true, limit: 100 },
   universe: null,    // 自動取得の対象銘柄（config/universe.json）
 };
 
@@ -88,20 +88,26 @@ function withRegime(a, s) {
 // ================= データ =================
 const tracked = () => [...new Set([...state.settings.watchlist, ...state.settings.holdings.map((h) => h.sym)])];
 const inUniverse = (s) => !state.universe || state.universe.has(s);
-const fundaOf = (s) => state.server.fundamentals?.fundamentals?.[s] || null;
-const eventsOf = (s) => state.server.events?.events?.[s] || null;
+const rowOf = (s) => state.rowBySym?.get(s) || null;
+const fundaOf = (s) => rowOf(s);
+const eventsOf = (s) => rowOf(s)?.events || null;
 const newsOf = (s) => state.server.news?.news?.[s] || [];
-const nameOf = (s) => state.quotes[s]?.name || state.server.screener?.rows?.find((r) => r.sym === s)?.name || s;
+const nameOf = (s) => state.universe?.get(s)?.name || state.quotes[s]?.name || s;
 
 async function loadServer() {
   if (!state.provider.static) { state.server = {}; return; }
-  const files = ['screener', 'backtest', 'paper', 'events', 'news', 'ai', 'meta', 'market', 'fundamentals', 'review'];
-  try {
-    const u = await (await fetch('config/universe.json', { cache: 'no-store' })).json();
-    state.universe = new Set(u.symbols.map((x) => x.sym));
-  } catch { state.universe = null; }
+  const files = ['screener', 'backtest', 'paper', 'news', 'ai', 'meta', 'market', 'review'];
+  if (!state.universe) {
+    try {
+      const u = await state.provider.json('universe.json', { fresh: true });
+      state.universe = new Map(u.symbols.map((x) => [x.sym, x]));
+      state.sectors = [...new Set(u.symbols.map((x) => x.sector).filter(Boolean))].sort();
+      for (const x of u.symbols) state.provider.names[x.sym] = x.name;
+    } catch { state.universe = null; }
+  }
   const docs = await Promise.all(files.map((f) => state.provider.json(`${f}.json`, { fresh: true }).catch(() => null)));
   state.server = Object.fromEntries(files.map((f, i) => [f, docs[i]]));
+  state.rowBySym = new Map((state.server.screener?.rows || []).map((r) => [r.sym, r]));
 }
 
 async function loadCandles(symbols) {
@@ -130,7 +136,7 @@ async function buildLocal() {
     const a = analyze(series[s]);
     const c = series[s], last = c[c.length - 1], prev = c[c.length - 2] || last;
     return {
-      sym: s, name: nameOf(s), market: /^\d/.test(s) ? 'JP' : 'US', price: last.close,
+      sym: s, name: nameOf(s), seg: 'P', liquid: true, price: last.close,
       changePct: ((last.close - prev.close) / prev.close) * 100, ids: a.signals.map((x) => x.id),
       details: Object.fromEntries(a.signals.map((x) => [x.id, x.detail])), events: null,
     };
@@ -293,8 +299,8 @@ function renderRegime() {
     if (!r) return '';
     return `<div class="reg ${r.state.key}"><b>${label}：${r.state.label}</b>${r.penalty ? `<span>買いシグナルを −${r.penalty}点</span>` : ''}${r.notes.length ? `<small>${r.notes.map(esc).join('・')}</small>` : ''}</div>`;
   };
-  $('#regime').innerHTML = `<div class="idxs">${chip('N225', '日経平均')}${chip('SPX', 'S&P500')}${chip('VIX', 'VIX')}${chip('USDJPY', 'ドル円')}</div>
-    <div class="regs">${reg('JP', '日本株の地合い')}${reg('US', '米国株の地合い')}</div>
+  $('#regime').innerHTML = `<div class="idxs">${chip('N225', '日経平均')}${chip('TOPIX', 'TOPIX(ETF)')}${chip('SPX', 'S&P500')}${chip('USDJPY', 'ドル円')}</div>
+    <div class="regs one">${reg('JP', '地合い')}</div>
     ${state.settings.marketFilter ? '' : '<small class="muted">地合いフィルターはオフです（設定で変更）</small>'}`;
 }
 
@@ -476,27 +482,33 @@ function screenerRows() {
   return rows.map((r) => {
     const pen = penaltyFor(r.sym);
     const score = Math.max(-100, scoreOf(r.ids, w) - pen);
-    const f = fundaOf(r.sym) || r;
-    return { ...r, score, penalty: pen, verdict: verdictOf(score), per: f.per ?? null, pbr: f.pbr ?? null, divYield: f.divYield ?? null };
+    return { ...r, score, penalty: pen, verdict: verdictOf(score) };
   });
 }
 
 function renderScreener() {
   const f = state.scr;
-  const src = state.server.screener ? `全${state.server.screener.rows.length}銘柄（${new Date(state.server.screener.updatedAt).toLocaleString('ja-JP')} 更新）` : `デモ${state.local.rows?.length ?? 0}銘柄（ブラウザ内で計算）`;
+  const src = state.server.screener ? `東証${state.server.screener.rows.length.toLocaleString()}銘柄（${new Date(state.server.screener.updatedAt).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} 更新）` : `デモ${state.local.rows?.length ?? 0}銘柄（ブラウザ内で計算）`;
+  const secSel = $('#scr-sector');
+  if (state.sectors && secSel.options.length <= 1) secSel.innerHTML = '<option value="all">全業種</option>' + state.sectors.map((x) => `<option>${esc(x)}</option>`).join('');
   $('#scr-src').textContent = src;
   const q = f.q.trim().toLowerCase();
   const rows = screenerRows()
-    .filter((r) => f.market === 'all' || r.market === f.market)
+    .filter((r) => f.seg === 'all' || r.seg === f.seg)
+    .filter((r) => f.sector === 'all' || r.sector === f.sector)
+    .filter((r) => !f.liquid || r.liquid !== false)
     .filter((r) => r.score >= f.min)
     .filter((r) => !q || r.sym.toLowerCase().includes(q) || r.name.toLowerCase().includes(q))
     .filter((r) => FUNDA_FILTERS[f.funda].test(r))
     .sort((a, b) => b.score - a.score);
-  $('#scr-rows').innerHTML = rows.length
-    ? rows.map((r) => {
+  const shown = rows.slice(0, f.limit);
+  $('#scr-count').textContent = `${rows.length.toLocaleString()}件${rows.length > shown.length ? `（上位${shown.length}件を表示）` : ''}`;
+  $('#scr-more').hidden = rows.length <= shown.length;
+  $('#scr-rows').innerHTML = shown.length
+    ? shown.map((r) => {
         const inList = state.settings.watchlist.includes(r.sym);
         return `<tr data-scr="${esc(r.sym)}">
-          <td><div class="sym">${esc(r.sym)} <span class="mk">${r.market}</span></div><div class="nm">${esc(r.name)}</div><div class="evs">${eventChips(r.sym)}</div></td>
+          <td><div class="sym">${esc(r.sym)} ${r.seg ? `<span class="mk">${{ P: 'プ', S: 'ス', G: 'グ' }[r.seg] || ''}</span>` : ''}${r.liquid === false ? '<span class="mk thin">薄商い</span>' : ''}</div><div class="nm">${esc(r.name)}</div><div class="evs">${eventChips(r.sym)}</div></td>
           <td class="mono num">${fmt(r.price)}<div class="${sign(r.changePct)} small">${pct(r.changePct)}</div></td>
           <td>${meter(r.score)}<div><span class="badge ${r.verdict.key}">${r.verdict.label}</span></div></td>
           <td class="small fnd"><div>PER ${r.per != null ? r.per.toFixed(1) : '—'}</div><div>PBR ${r.pbr != null ? r.pbr.toFixed(2) : '—'}</div><div>利回り ${r.divYield != null ? (r.divYield * 100).toFixed(1) + '%' : '—'}</div></td>
@@ -630,7 +642,7 @@ function renderReview() {
   if (!rv) { $('#review-body').innerHTML = '<p class="muted">計算中…</p>'; return; }
   const box = (st, label) => `<div><small>${label}</small><b class="${sign(st.avg)}">${pctf(st.avg, 2)}</b><small>勝率${st.win != null ? Math.round(st.win * 100) + '%' : '—'}・指数に勝った${st.beat != null ? Math.round(st.beat * 100) + '%' : '—'}</small></div>`;
   $('#review-body').innerHTML = `
-    <p class="muted small">各営業日に「強い買いシグナル」（${state.server.review ? '地合いフィルター込み・' : ''}${rv.threshold}点以上）だった銘柄を、その後${rv.horizon}営業日の値動きで採点しています。${state.server.review ? '比較対象は日本株＝日経平均、米国株＝S&P500。' : 'デモデータです。'}</p>
+    <p class="muted small">各営業日に「強い買いシグナル」（${state.server.review ? '地合いフィルター込み・' : ''}${rv.threshold}点以上）だった銘柄を、その後${rv.horizon}営業日の値動きで採点しています。${state.server.review ? '比較対象はTOPIX（連動ETF）。売買代金1億円未満の銘柄は除外。' : 'デモデータです。'}</p>
     <div class="kpis">
       <div><small>直近8週の件数</small><b>${rv.total.n}</b><small>結果確定 ${rv.total.done}件</small></div>
       ${box(rv.total, '平均リターン（5日後）')}
@@ -652,31 +664,39 @@ function renderReview() {
 function renderBacktest() {
   const bt = universeStats();
   if (!bt) { $('#bt-body').innerHTML = '<p class="muted">計算中…</p>'; return; }
-  const tuned = state.server.backtest?.tuned || state.local.tuned || BASE_WEIGHTS;
-  const strat = (state.server.backtest || state.local).strategy || {};
-  const src = state.server.backtest ? `全${Object.keys(state.server.screener?.rows || {}).length}銘柄・過去1年` : 'デモ銘柄（シミュレーション価格）';
-  const cell = (st) => (st?.n ? `<td class="num mono">${st.n}</td><td class="num mono">${Math.round(st.win * 100)}%</td><td class="num mono ${sign(st.avg)}">${pctf(st.avg, 2)}</td>` : '<td class="num muted">0</td><td></td><td></td>');
+  const srv = state.server.backtest;
+  const tuned = srv?.tuned || state.local.tuned || BASE_WEIGHTS;
+  const strat = (srv || state.local).strategy || {};
+  const wf = srv?.walkForward;
+  const src = srv ? `東証${srv.symbols?.toLocaleString() ?? ''}銘柄・直近${srv.days ?? ''}営業日（売買代金1億円以上の日のみ）` : 'デモ銘柄（シミュレーション価格）';
+  const exc = (st) => (st?.excess != null ? `<b class="${sign(st.excess)}">${pctf(st.excess, 2)}</b>` : '<b>—</b>');
+  const kpi = (label, st) => `<div><small>${label}</small>${exc(st)}<small>${st?.n ? `${st.n.toLocaleString()}回・勝率${Math.round(st.win * 100)}%・平均${pctf(st.avg, 2)}` : 'なし'}</small></div>`;
+  const cell = (st) => (st?.n ? `<td class="num mono">${st.n.toLocaleString()}</td><td class="num mono">${Math.round(st.win * 100)}%</td><td class="num mono ${sign(st.excess ?? st.avg)}">${pctf(st.excess ?? st.avg, 2)}</td>` : '<td class="num muted">0</td><td></td><td></td>');
   $('#bt-body').innerHTML = `
-    <p class="muted small">対象: ${src}。シグナルが点灯した日の終値で買い、5営業日後の終値で比べたリターンです。</p>
+    <p class="muted small">対象: ${src}。シグナルが出た日の終値で買い、5営業日後の終値と比べています。大きな数字は<b>市場平均との差</b>（同じ日の全銘柄の平均を引いた値）で、銘柄選びの腕前を表します。</p>
     <div class="kpis">
-      <div><small>全日平均（基準）</small><b class="${sign(bt.baseline.avg)}">${pctf(bt.baseline.avg, 2)}</b><small>勝率${Math.round((bt.baseline.win || 0) * 100)}%</small></div>
-      <div><small>「強い買い」の日</small><b class="${sign(bt.byVerdict.strong.avg)}">${pctf(bt.byVerdict.strong.avg, 2)}</b><small>${bt.byVerdict.strong.n}回・勝率${bt.byVerdict.strong.n ? Math.round(bt.byVerdict.strong.win * 100) : '—'}%</small></div>
-      <div><small>「注目」の日</small><b class="${sign(bt.byVerdict.watch.avg)}">${pctf(bt.byVerdict.watch.avg, 2)}</b><small>${bt.byVerdict.watch.n}回・勝率${bt.byVerdict.watch.n ? Math.round(bt.byVerdict.watch.win * 100) : '—'}%</small></div>
+      ${kpi('「強い買い」の日（市場平均との差）', bt.byVerdict.strong)}
+      ${kpi('「注目」の日', bt.byVerdict.watch)}
+      <div><small>全銘柄・全日の平均</small><b class="${sign(bt.baseline.avg)}">${pctf(bt.baseline.avg, 2)}</b><small>勝率${Math.round((bt.baseline.win || 0) * 100)}%</small></div>
     </div>
-    ${bt.byRegime ? `<div class="kpis">
+    ${wf?.base?.n != null ? `<h3>学習に使っていない期間での成績（${esc(wf.testFrom || '')}〜）</h3>
+    <p class="muted small">毎週、直近${wf.window}営業日の成績だけで配点を学び直し、その後の1週間に当てはめた結果です。本番に近い成績の目安になります。</p>
+    <div class="kpis">${kpi('標準配点', wf.base)}${kpi('毎週学び直す配点（自動チューニング）', wf.tuned)}</div>` : ''}
+    ${bt.byRegime?.good?.n || bt.byRegime?.bad?.n ? `<div class="kpis">
       <div><small>地合い良好の日の「強い買い」</small><b class="${sign(bt.byRegime.good.avg)}">${pctf(bt.byRegime.good.avg, 2)}</b><small>${bt.byRegime.good.n}回・勝率${bt.byRegime.good.n ? Math.round(bt.byRegime.good.win * 100) : '—'}%</small></div>
       <div><small>地合い悪化の日の「強い買い」</small><b class="${sign(bt.byRegime.bad.avg)}">${pctf(bt.byRegime.bad.avg, 2)}</b><small>${bt.byRegime.bad.n}回・勝率${bt.byRegime.bad.n ? Math.round(bt.byRegime.bad.win * 100) : '—'}%</small></div>
     </div>` : ''}
+    <h3>シグナル別</h3>
     <div class="table-wrap"><table>
-      <thead><tr><th>シグナル</th><th class="num">標準</th><th class="num">調整後</th><th class="num">回数</th><th class="num">勝率</th><th class="num">平均</th></tr></thead>
-      <tbody>${SIGNALS.map((s) => `<tr><td>${esc(s.label)}</td><td class="num mono">${s.base}</td><td class="num mono ${tuned[s.id] !== s.base ? 'chg' : ''}">${tuned[s.id]}</td>${cell(bt.stats[s.id])}</tr>`).join('')}</tbody>
+      <thead><tr><th>シグナル</th><th class="num">標準</th><th class="num">学習後</th><th class="num">回数</th><th class="num">勝率</th><th class="num">市場差</th></tr></thead>
+      <tbody>${SIGNALS.map((s) => `<tr><td>${esc(s.label)}<div class="nm">${esc(s.desc || '')}</div></td><td class="num mono">${s.base}</td><td class="num mono ${tuned[s.id] !== s.base ? 'chg' : ''}">${tuned[s.id]}</td>${cell(bt.stats[s.id])}</tr>`).join('')}</tbody>
     </table></div>
     <h3>売買ルールで回した場合（スコア${DEFAULT_RULES.entry}以上で買い／+10%利確・−5%損切り・最長10日）</h3>
     <div class="table-wrap"><table>
       <thead><tr><th>配点</th><th class="num">取引</th><th class="num">勝率</th><th class="num">平均</th><th class="num">合計損益</th></tr></thead>
-      <tbody>${[['標準配点', strat.base], ['標準＋地合いフィルター', strat.filtered], ['自動調整した配点', strat.tuned]].map(([l, st]) => st ? `<tr><td>${l}</td><td class="num mono">${st.trades}</td><td class="num mono">${st.win != null ? Math.round(st.win * 100) + '%' : '—'}</td><td class="num mono ${sign(st.avg)}">${pctf(st.avg, 2)}</td><td class="num mono ${sign(st.pnl)}">${yen(st.pnl)}</td></tr>` : '').join('')}</tbody>
+      <tbody>${[['標準配点', strat.base], ['標準＋地合いフィルター', strat.filtered], ['学習後の配点＋地合い', strat.tuned]].map(([l, st]) => st ? `<tr><td>${l}</td><td class="num mono">${st.trades.toLocaleString()}</td><td class="num mono">${st.win != null ? Math.round(st.win * 100) + '%' : '—'}</td><td class="num mono ${sign(st.avg)}">${pctf(st.avg, 2)}</td><td class="num mono ${sign(st.pnl)}">${yen(st.pnl)}</td></tr>` : '').join('')}</tbody>
     </table></div>
-    <p class="muted small">※ 調整後の配点は同じ期間のデータから作っているため、成績は実際より良く見えます（過剰適合）。将来の成績を保証するものではありません。</p>`;
+    <p class="muted small">※ 1回¥100,000で売買した場合の合計。手数料・税金は含みません。過去の成績は将来を保証しません。</p>`;
 }
 
 // ================= 操作 =================
@@ -707,8 +727,22 @@ function requestUniverse(s, action = '追加') {
   window.open(`https://github.com/${repoName()}/issues/new?title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`, '_blank', 'noopener');
 }
 
+// 入力がコードでなければ銘柄名から探す
+function resolveSymbol(input) {
+  const t = input.trim();
+  if (!t) return '';
+  const code = t.toUpperCase().replace(/\.T$/, '');
+  if (/^[0-9][0-9A-Z]{3}$/.test(code)) return code;
+  if (state.universe) {
+    const q = t.toLowerCase();
+    const hit = [...state.universe.values()].find((u) => u.name.toLowerCase() === q) || [...state.universe.values()].find((u) => u.name.toLowerCase().includes(q));
+    if (hit) return hit.sym;
+  }
+  return code;
+}
+
 function addSymbol(s) {
-  s = s.trim().toUpperCase();
+  s = resolveSymbol(s);
   if (!s) return;
   if (state.provider?.static && state.universe && !inUniverse(s)) {
     if (confirm(`${s} はまだ自動取得の対象外です。\nGitHub で追加をリクエストしますか？（送信すると数分でデータが届きます）`)) requestUniverse(s);
@@ -740,7 +774,10 @@ $('#add-form').addEventListener('submit', (e) => {
   addSymbol($('#add-sym').value);
   $('#add-sym').value = '';
 });
-$('#scr-market').addEventListener('change', (e) => { state.scr.market = e.target.value; renderScreener(); });
+$('#scr-seg').addEventListener('change', (e) => { state.scr.seg = e.target.value; state.scr.limit = 100; renderScreener(); });
+$('#scr-sector').addEventListener('change', (e) => { state.scr.sector = e.target.value; state.scr.limit = 100; renderScreener(); });
+$('#scr-liquid').addEventListener('change', (e) => { state.scr.liquid = e.target.checked; renderScreener(); });
+$('#scr-more').addEventListener('click', () => { state.scr.limit += 100; renderScreener(); });
 $('#scr-min').addEventListener('change', (e) => { state.scr.min = +e.target.value; renderScreener(); });
 $('#scr-q').addEventListener('input', (e) => { state.scr.q = e.target.value; renderScreener(); });
 
@@ -809,8 +846,6 @@ function renderWeightInputs() {
 function openSettings() {
   const st = state.settings;
   $('#s-provider').value = st.provider;
-  $('#s-key').value = st.apiKey;
-  $('#s-interval').value = st.interval;
   $('#s-up').value = st.upColor;
   $('#s-wmode').value = st.weightMode;
   $('#s-style').innerHTML = Object.entries(STYLES).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('');
@@ -827,13 +862,11 @@ $('#s-wmode').addEventListener('change', renderWeightInputs);
 $('#s-save').addEventListener('click', (e) => {
   e.preventDefault();
   const st = state.settings;
-  const before = JSON.stringify([st.provider, st.apiKey, st.interval]);
+  const before = st.provider;
   const custom = {};
   document.querySelectorAll('[data-w]').forEach((i) => (custom[i.dataset.w] = Math.round(+i.value || 0)));
   Object.assign(st, {
     provider: $('#s-provider').value,
-    apiKey: $('#s-key').value.trim(),
-    interval: +$('#s-interval').value || 5,
     upColor: $('#s-up').value,
     weightMode: $('#s-wmode').value,
     style: $('#s-style').value,
@@ -842,11 +875,10 @@ $('#s-save').addEventListener('click', (e) => {
     marketFilter: $('#s-mfilter').checked,
   });
   if (st.weightMode === 'custom') st.custom = custom;
-  if (st.provider === 'twelvedata' && !st.apiKey) { toast('Twelve Data には APIキーが必要です', 'err'); return; }
   store.save(st);
   dlg.close();
   document.documentElement.dataset.up = st.upColor;
-  if (JSON.stringify([st.provider, st.apiKey, st.interval]) !== before) restart();
+  if (st.provider !== before) restart();
   else { recomputeAll(); render(); }
 });
 $('#s-cancel').addEventListener('click', (e) => { e.preventDefault(); dlg.close(); });

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "株価リアルタイム監視＆狙い目銘柄サジェスト（静的サイト）",
+  "description": "株価ハック — 東証全銘柄の狙い目サジェスト（静的サイト）",
   "scripts": {
     "test": "node --test test/*.test.js",
     "start": "npx --yes serve ."

@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Kabu Radar — 株価監視＆狙い目サジェスト</title>
-  <meta name="description" content="日米の株価を監視し、テクニカル指標・バックテスト・AI解説で狙い目銘柄をサジェストします。" />
+  <title>株価ハック — 日本株の狙い目をシグナルで発見</title>
+  <meta name="description" content="東証の全上場銘柄を監視し、検証済みのテクニカルシグナルで狙い目の日本株をサジェストします。" />
   <meta name="theme-color" content="#0b0f14" />
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" href="icons/icon-192.png" />
@@ -19,7 +19,7 @@
 <body>
   <header class="top">
     <div class="bar">
-      <div class="brand"><span class="logo">◎</span> KABU RADAR</div>
+      <div class="brand"><span class="logo">◎</span> 株価ハック</div>
       <div class="meta">
         <span id="status" class="dot"></span>
         <span class="mono" id="updated">—</span>
@@ -51,7 +51,7 @@
         <div class="sec-head">
           <h2>ウォッチリスト</h2>
           <form id="add-form" class="add">
-            <input id="add-sym" placeholder="銘柄コード（例: AAPL, 7203）" autocomplete="off" />
+            <input id="add-sym" placeholder="コードか銘柄名（例: 7203、トヨタ）" autocomplete="off" />
             <button>追加</button>
           </form>
         </div>
@@ -106,7 +106,8 @@
       <section>
         <h2>スクリーナー <small id="scr-src"></small></h2>
         <div class="filters">
-          <select id="scr-market"><option value="all">日米すべて</option><option value="JP">日本株</option><option value="US">米国株</option></select>
+          <select id="scr-seg"><option value="all">全市場</option><option value="P">プライム</option><option value="S">スタンダード</option><option value="G">グロース</option></select>
+          <select id="scr-sector"><option value="all">全業種</option></select>
           <select id="scr-min">
             <option value="40">強い買いシグナルのみ</option>
             <option value="20" selected>注目以上</option>
@@ -122,13 +123,16 @@
             <option value="value">割安×上昇トレンド</option>
           </select>
           <input id="scr-q" placeholder="銘柄名・コードで絞り込み" />
+          <label class="check small"><input type="checkbox" id="scr-liquid" checked /> 売買代金1億円以上のみ</label>
         </div>
+        <p class="muted small" id="scr-count"></p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>銘柄</th><th class="num">現在値</th><th>スコア</th><th>指標</th><th class="hide-sm">点灯中のシグナル</th><th></th></tr></thead>
             <tbody id="scr-rows"></tbody>
           </table>
         </div>
+        <button id="scr-more" class="ghost wide" hidden>さらに100件表示</button>
       </section>
     </div>
 
@@ -181,7 +185,7 @@
       </section>
     </div>
 
-    <p class="disclaimer">本サイトの判定・解説はテクニカル指標とAIによる機械的なもので、投資助言ではありません。売買の判断はご自身の責任で行ってください。デモモードの値はシミュレーションです。自動取得データは約20分遅れです。</p>
+    <p class="disclaimer">株価ハックの判定・解説は過去データにもとづく機械的なもので、投資助言ではありません。売買の判断はご自身の責任で行ってください。株価は取引時間中15分ごとの更新で、約20分遅れです。</p>
   </main>
 
   <dialog id="settings">
@@ -192,13 +196,10 @@
         <legend>データ</legend>
         <label>取得元
           <select id="s-provider">
-            <option value="auto">自動（GitHubの自動取得データ → なければデモ）</option>
+            <option value="auto">東証全銘柄（15分更新・約20分遅れ）</option>
             <option value="demo">デモ（シミュレーション）</option>
-            <option value="twelvedata">Twelve Data（米国株リアルタイム・無料キー）</option>
           </select>
         </label>
-        <label>Twelve Data APIキー <input id="s-key" type="password" autocomplete="off" placeholder="twelvedata.com で無料取得" /></label>
-        <label>更新間隔（秒・デモ用） <input id="s-interval" type="number" min="2" /></label>
       </fieldset>
 
       <fieldset>

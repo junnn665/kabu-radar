@@ -1,6 +1,6 @@
 {
-  "name": "Kabu Radar — 株価監視＆狙い目サジェスト",
-  "short_name": "Kabu Radar",
+  "name": "株価ハック — 日本株の狙い目サジェスト",
+  "short_name": "株価ハック",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

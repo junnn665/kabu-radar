@@ -1,5 +1,5 @@
 // オフライン対応：画面はキャッシュ優先、データ（data/）はネットワーク優先
-const CACHE = 'kabu-radar-v4';
+const CACHE = 'kabuka-hack-v5';
 const SHELL = [
   './', 'index.html', 'css/style.css', 'manifest.webmanifest',
   'js/app.js', 'js/providers.js', 'js/signals.js', 'js/indicators.js', 'js/backtest.js', 'js/chart.js', 'js/ai.js', 'js/explain.js', 'js/levels.js', 'js/market.js', 'js/review.js',

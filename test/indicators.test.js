@@ -37,7 +37,7 @@ test('crossWithin detects golden cross', () => {
 
 const demo = new DemoProvider();
 const series = {};
-for (const s of ['AAPL', 'NVDA', '7203', '6758', 'ZZZ']) series[s] = await demo.getDailyCandles(s);
+for (const s of ['7203', '6758', '8306', '9984', '9999']) series[s] = await demo.getDailyCandles(s);
 
 test('analyze: bounded score, labels, honours weights', () => {
   for (const cs of Object.values(series)) {
@@ -50,7 +50,7 @@ test('analyze: bounded score, labels, honours weights', () => {
 });
 
 test('signals do not look ahead: evaluating a prefix gives the same result', () => {
-  const cs = series.AAPL;
+  const cs = series['7203'];
   const full = computeIndicators(cs);
   const i = 150;
   const prefix = computeIndicators(cs.slice(0, i + 1));
@@ -58,13 +58,14 @@ test('signals do not look ahead: evaluating a prefix gives the same result', () 
 });
 
 test('scoreOf clamps', () => {
-  assert.equal(scoreOf(['golden_cross', 'rsi_oversold', 'bb_lower', 'macd_up', 'vol_surge_up', 'breakout', 'uptrend']), 100);
+  assert.equal(scoreOf(['dip_in_uptrend', 'gap_up_volume', 'vol_surge_up', 'bb_lower', 'short_oversold', 'sharp_drop', 'hammer', 'golden_cross', 'breakout', 'uptrend']), 100);
+  assert.equal(scoreOf(['trend_break', 'short_overbought', 'dead_cross', 'vol_surge_down', 'bb_upper', 'overheated', 'downtrend']), -70);
 });
 
 test('style multipliers', () => {
   const c = applyStyle(BASE_WEIGHTS, 'contrarian');
-  assert.ok(c.rsi_oversold > BASE_WEIGHTS.rsi_oversold);
-  assert.ok(c.golden_cross < BASE_WEIGHTS.golden_cross);
+  assert.ok(c.dip_in_uptrend > BASE_WEIGHTS.dip_in_uptrend);
+  assert.ok(c.gap_up_volume < BASE_WEIGHTS.gap_up_volume);
 });
 
 test('backtest stats, tuning and simulation', () => {
@@ -72,7 +73,7 @@ test('backtest stats, tuning and simulation', () => {
   assert.ok(bt.baseline.n > 300);
   const tuned = tuneWeights(bt);
   for (const s of SIGNALS) assert.ok(Math.abs(tuned[s.id]) <= 40);
-  const trades = simulate(series.AAPL);
+  const trades = simulate(series['7203']);
   for (const t of trades) {
     assert.ok(t.entryDate < (t.exitDate || '9999'));
     if (t.reason === '利確') assert.ok(t.ret >= 0.1);

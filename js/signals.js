@@ -1,36 +1,49 @@
-// 狙い目判定エンジン。
+// 狙い目判定エンジン v2（日本株向け）。
 // 指標は全期間で一度だけ計算し（未来の値は使わない因果的な指標のみ）、任意の日 i 時点のシグナルを評価できる。
 // これにより「今の判定」と「過去の成績（バックテスト）」が同じロジックで計算される。
-import { sma, rsi, bollinger, macd } from './indicators.js';
+//
+// v1 からの変更（日本株40銘柄・1年の実データで、市場平均との差で検証した結果）
+//  - 両期間で効いていなかった MACD 好転・RSI(14)<30・高値ブレイク を外すか弱めた
+//  - 短期の行き過ぎ（RSI(2)）、上昇トレンド中の押し目、出来高を伴う上昇／窓開け を重視
+//  - 上昇トレンドの急な崩れ（75日線の上だが25日線から−5%以上）を強い警戒に
+import { sma, rsi, bollinger } from './indicators.js';
 
-// シグナル定義。base は標準配点、kind は配点スタイル（逆張り / 順張り）の分類。
+// base は標準配点、kind は配点スタイル（逆張り / 順張り）の分類
 export const SIGNALS = [
-  { id: 'rsi_oversold', label: '売られすぎ (RSI<30)', base: 25, kind: 'contrarian' },
-  { id: 'rsi_low', label: 'やや売られ気味 (RSI<40)', base: 8, kind: 'contrarian' },
-  { id: 'rsi_overbought', label: '買われすぎ (RSI>75)', base: -20, kind: 'contrarian' },
-  { id: 'rsi_high', label: 'やや過熱 (RSI>70)', base: -10, kind: 'contrarian' },
-  { id: 'golden_cross', label: 'ゴールデンクロス', base: 25, kind: 'trend' },
-  { id: 'dead_cross', label: 'デッドクロス', base: -25, kind: 'trend' },
-  { id: 'bb_lower', label: 'ボリンジャー下限タッチ', base: 15, kind: 'contrarian' },
-  { id: 'bb_upper', label: 'ボリンジャー上限', base: -10, kind: 'contrarian' },
-  { id: 'macd_up', label: 'MACD 好転', base: 15, kind: 'trend' },
-  { id: 'macd_down', label: 'MACD 悪化', base: -15, kind: 'trend' },
-  { id: 'vol_surge_up', label: '出来高急増・上昇', base: 15, kind: 'trend' },
-  { id: 'vol_surge_down', label: '出来高を伴う下落', base: -10, kind: 'trend' },
-  { id: 'breakout', label: '高値ブレイク (120日)', base: 10, kind: 'trend' },
-  { id: 'uptrend', label: '上昇トレンド', base: 10, kind: 'trend' },
-  { id: 'downtrend', label: '下降トレンド', base: -10, kind: 'trend' },
+  { id: 'dip_in_uptrend', label: '上昇トレンド中の押し目', base: 25, kind: 'contrarian', desc: '75日線が上向きの銘柄で、RSI(2)が10未満まで急落' },
+  { id: 'short_oversold', label: '短期の売られすぎ', base: 10, kind: 'contrarian', desc: 'RSI(2)が10未満' },
+  { id: 'bb_lower', label: 'ボリンジャー下限', base: 10, kind: 'contrarian', desc: '終値が−2σ以下' },
+  { id: 'sharp_drop', label: '5日で急落', base: 5, kind: 'contrarian', desc: '5営業日で−7%以上' },
+  { id: 'hammer', label: '下ヒゲ反発', base: 5, kind: 'contrarian', desc: '下落後に安値から大きく戻して引けた' },
+  { id: 'vol_surge_up', label: '出来高急増・上昇', base: 15, kind: 'trend', desc: '出来高が20日平均の2倍以上で上昇' },
+  { id: 'gap_up_volume', label: '大商いの窓開け上昇', base: 15, kind: 'trend', desc: '前日終値より3%以上高く始まり、出来高2倍以上（材料・決算サプライズなど）' },
+  { id: 'golden_cross', label: 'ゴールデンクロス', base: 5, kind: 'trend', desc: '5日線が25日線を上抜け（直近3日）' },
+  { id: 'breakout', label: '60日高値ブレイク', base: 5, kind: 'trend', desc: '直近60日の高値を更新' },
+  { id: 'uptrend', label: '上昇トレンド', base: 5, kind: 'trend', desc: '75日線の上で75日線が上向き' },
+  { id: 'short_overbought', label: '短期の過熱', base: -15, kind: 'contrarian', desc: 'RSI(2)が90超' },
+  { id: 'bb_upper', label: 'ボリンジャー上限', base: -10, kind: 'contrarian', desc: '終値が+2σ以上' },
+  { id: 'overheated', label: '25日線から大きく上振れ', base: -5, kind: 'contrarian', desc: '25日移動平均乖離率が+15%以上' },
+  { id: 'trend_break', label: '上昇トレンドの急な崩れ', base: -15, kind: 'trend', desc: '75日線の上にいるのに25日線を5%以上割り込んだ' },
+  { id: 'dead_cross', label: 'デッドクロス', base: -10, kind: 'trend', desc: '5日線が25日線を下抜け（直近3日）' },
+  { id: 'vol_surge_down', label: '出来高を伴う下落', base: -10, kind: 'trend', desc: '出来高が20日平均の2倍以上で下落' },
+  { id: 'downtrend', label: '下降トレンド', base: -5, kind: 'trend', desc: '75日線の下で25日線が下向き' },
 ];
 export const SIGNAL_MAP = Object.fromEntries(SIGNALS.map((s) => [s.id, s]));
+export const SIGNAL_BIT = Object.fromEntries(SIGNALS.map((s, i) => [s.id, 1 << i]));
 export const BASE_WEIGHTS = Object.fromEntries(SIGNALS.map((s) => [s.id, s.base]));
 
+// しきい値は日本株の実データで「スコア帯ごとの市場平均との差」を見て決めた（30点以上が前後半とも市場平均を上回った）
+export const STRONG = 30, WATCH = 20, CAUTION = -10;
 export const VERDICTS = [
-  { min: 40, key: 'strong', label: '強い買いシグナル' },
-  { min: 20, key: 'watch', label: '注目' },
-  { min: -29, key: 'neutral', label: '中立' },
+  { min: STRONG, key: 'strong', label: '強い買いシグナル' },
+  { min: WATCH, key: 'watch', label: '注目' },
+  { min: CAUTION + 1, key: 'neutral', label: '中立' },
   { min: -Infinity, key: 'caution', label: '警戒' },
 ];
 export const verdictOf = (score) => VERDICTS.find((v) => score >= v.min);
+
+// 売買代金（20日平均）がこれ未満の銘柄はサジェスト・成績集計から外す（値動きが荒く、売買しにくいため）
+export const MIN_TURNOVER = 1e8; // 1億円
 
 // スタイル補正：逆張り派なら逆張りシグナルを強め、順張りシグナルを弱める（逆も同様）
 export const STYLES = {
@@ -46,27 +59,30 @@ export function applyStyle(weights, style = 'balanced') {
 }
 
 export function computeIndicators(candles) {
-  const close = candles.map((c) => c.close);
-  const high = candles.map((c) => c.high);
-  const vol = candles.map((c) => c.volume || 0);
   const n = candles.length;
-  const volAvg20 = new Array(n).fill(null);
-  let vs = 0;
+  const close = candles.map((c) => c.close);
+  const vol = candles.map((c) => c.volume || 0);
+  const volAvg20 = new Array(n).fill(null);   // 当日を除く直近20日平均
+  const turnover20 = new Array(n).fill(null); // 当日を含む直近20日の平均売買代金
+  let vs = 0, ts = 0;
   for (let i = 0; i < n; i++) {
-    if (i >= 20) volAvg20[i] = vs / 20; // 当日を除く直近20日平均
+    if (i >= 20) volAvg20[i] = vs / 20;
     vs += vol[i];
     if (i >= 20) vs -= vol[i - 20];
+    ts += close[i] * vol[i];
+    if (i >= 20) ts -= close[i - 20] * vol[i - 20];
+    if (i >= 19) turnover20[i] = ts / 20;
   }
-  const high120 = new Array(n).fill(null); // 当日を除く直近120日の高値
-  for (let i = 20; i < n; i++) {
+  const high60 = new Array(n).fill(null); // 当日を除く直近60日の高値
+  for (let i = 60; i < n; i++) {
     let m = -Infinity;
-    for (let j = Math.max(0, i - 120); j < i; j++) if (high[j] > m) m = high[j];
-    high120[i] = m;
+    for (let j = i - 60; j < i; j++) if (candles[j].high > m) m = candles[j].high;
+    high60[i] = m;
   }
   return {
-    close, vol, volAvg20, high120,
+    candles, close, vol, volAvg20, turnover20, high60,
     sma5: sma(close, 5), sma25: sma(close, 25), sma75: sma(close, 75),
-    rsi: rsi(close, 14), bb: bollinger(close, 20, 2), macd: macd(close),
+    rsi: rsi(close, 14), rsi2: rsi(close, 2), bb: bollinger(close, 20, 2),
   };
 }
 
@@ -79,71 +95,85 @@ function crossAt(a, b, i, n) {
   return 0;
 }
 
-const f2 = (v) => (Math.abs(v) >= 1000 ? v.toFixed(0) : v.toFixed(2));
+const f2 = (v) => (Math.abs(v) >= 1000 ? v.toFixed(0) : v.toFixed(1));
+const pc = (v) => `${v > 0 ? '+' : ''}${(v * 100).toFixed(1)}%`;
+
+export const isLiquid = (ind, i, min = MIN_TURNOVER) => (ind.turnover20[i] ?? 0) >= min;
 
 // i 日目時点で点灯しているシグナル [{id, detail}]
 export function signalsAt(ind, i) {
   const out = [];
   const add = (id, detail) => out.push({ id, detail });
-  const price = ind.close[i];
+  const c = ind.close, cs = ind.candles;
+  const price = c[i];
+  if (i < 1) return out;
 
-  const r = ind.rsi[i];
-  if (r != null) {
-    if (r < 30) add('rsi_oversold', `RSI ${r.toFixed(1)} — 反発の余地`);
-    else if (r < 40) add('rsi_low', `RSI ${r.toFixed(1)}`);
-    else if (r > 75) add('rsi_overbought', `RSI ${r.toFixed(1)} — 高値掴み注意`);
-    else if (r > 70) add('rsi_high', `RSI ${r.toFixed(1)}`);
+  const s25 = ind.sma25[i], s75 = ind.sma75[i], s75p = ind.sma75[i - 10], s25p = ind.sma25[i - 5];
+  const up = s75 != null && s75p != null && price > s75 && s75 > s75p;
+  const down = s75 != null && s25 != null && s25p != null && price < s75 && s25 < s25p;
+  const r2 = ind.rsi2[i];
+  const dev25 = s25 ? price / s25 - 1 : null;
+
+  if (r2 != null && r2 < 10) {
+    if (up) add('dip_in_uptrend', `RSI(2) ${r2.toFixed(0)}・75日線は上向き`);
+    else add('short_oversold', `RSI(2) ${r2.toFixed(0)}`);
   }
+  if (r2 != null && r2 > 90) add('short_overbought', `RSI(2) ${r2.toFixed(0)}`);
 
-  const gc = crossAt(ind.sma5, ind.sma25, i, 3);
-  if (gc === 1) add('golden_cross', '5日線が25日線を上抜け（直近3日）');
-  if (gc === -1) add('dead_cross', '5日線が25日線を下抜け（直近3日）');
+  const lo = ind.bb.lower[i], hi = ind.bb.upper[i];
+  if (lo != null && price <= lo) add('bb_lower', `−2σ (${f2(lo)}) 以下`);
+  if (hi != null && price >= hi) add('bb_upper', `+2σ (${f2(hi)}) 以上`);
 
-  const lo = ind.bb.lower[i], up = ind.bb.upper[i];
-  if (lo != null && price <= lo) add('bb_lower', `-2σ (${f2(lo)}) 以下 — 逆張り候補`);
-  if (up != null && price >= up) add('bb_upper', `+2σ (${f2(up)}) 以上`);
-
-  const h = ind.macd.hist;
-  for (let k = i; k > 0 && k > i - 3; k--) {
-    if (h[k] == null || h[k - 1] == null) continue;
-    if (h[k - 1] <= 0 && h[k] > 0) { add('macd_up', 'MACDがシグナルを上抜け'); break; }
-    if (h[k - 1] >= 0 && h[k] < 0) { add('macd_down', 'MACDがシグナルを下抜け'); break; }
+  if (i >= 5) {
+    const r5 = price / c[i - 5] - 1;
+    if (r5 <= -0.07) add('sharp_drop', `5日で${pc(r5)}`);
+    const bar = cs[i], range = bar.high - bar.low;
+    if (r5 < -0.03 && range > 0 && (price - bar.low) / range > 0.7 && price >= bar.open) add('hammer', '安値から大きく戻して陽線引け');
   }
 
   const va = ind.volAvg20[i];
-  if (va && i > 0) {
+  if (va) {
     const ratio = ind.vol[i] / va;
-    const chg = price - ind.close[i - 1];
-    if (ratio >= 2 && chg > 0) add('vol_surge_up', `20日平均の ${ratio.toFixed(1)} 倍・上昇`);
-    else if (ratio >= 2 && chg < 0) add('vol_surge_down', `20日平均の ${ratio.toFixed(1)} 倍・下落`);
+    const chg = price / c[i - 1] - 1;
+    const gap = cs[i].open / c[i - 1] - 1;
+    if (ratio >= 2 && gap >= 0.03 && price >= cs[i].open * 0.99) add('gap_up_volume', `窓開け${pc(gap)}・出来高${ratio.toFixed(1)}倍`);
+    else if (ratio >= 2 && chg > 0) add('vol_surge_up', `出来高${ratio.toFixed(1)}倍・${pc(chg)}`);
+    else if (ratio >= 2 && chg < 0) add('vol_surge_down', `出来高${ratio.toFixed(1)}倍・${pc(chg)}`);
   }
 
-  const ph = ind.high120[i];
-  if (ph != null && i >= 60 && price > ph) add('breakout', `直近高値 ${f2(ph)} を更新`);
+  const gc = crossAt(ind.sma5, ind.sma25, i, 3);
+  if (gc === 1) add('golden_cross', '5日線が25日線を上抜け');
+  if (gc === -1) add('dead_cross', '5日線が25日線を下抜け');
 
-  const s75 = ind.sma75[i], s25 = ind.sma25[i], s25p = ind.sma25[i - 5];
-  if (s75 != null && s25 != null && s25p != null) {
-    if (price > s75 && s25 > s25p) add('uptrend', '75日線の上・25日線が上向き');
-    if (price < s75 && s25 < s25p) add('downtrend', '75日線の下・25日線が下向き');
-  }
+  const ph = ind.high60[i];
+  if (ph != null && price > ph) add('breakout', `60日高値 ${f2(ph)} を更新`);
+
+  if (dev25 != null && dev25 >= 0.15) add('overheated', `25日線乖離 ${pc(dev25)}`);
+  if (dev25 != null && s75 != null && price > s75 && dev25 <= -0.05) add('trend_break', `25日線乖離 ${pc(dev25)}`);
+
+  if (up) add('uptrend', '75日線の上・75日線が上向き');
+  if (down) add('downtrend', '75日線の下・25日線が下向き');
   return out;
 }
+
+export const idsToMask = (ids) => ids.reduce((m, id) => m | (SIGNAL_BIT[id] || 0), 0);
 
 export function scoreOf(ids, weights = BASE_WEIGHTS) {
   const sum = ids.reduce((a, id) => a + (weights[id] ?? BASE_WEIGHTS[id] ?? 0), 0);
   return Math.max(-100, Math.min(100, sum));
 }
 
-// 最新日（または指定日）の総合判定
+// 最新日の総合判定
 export function analyze(candles, weights = BASE_WEIGHTS, ind = null) {
   if (!candles || candles.length < 30) {
-    return { score: 0, signals: [], verdict: verdictOf(0), ind: null };
+    return { score: 0, signals: [], verdict: verdictOf(0), ind: null, liquid: true, turnover: null };
   }
   ind = ind || computeIndicators(candles);
-  const fired = signalsAt(ind, candles.length - 1);
+  const i = candles.length - 1;
+  const fired = signalsAt(ind, i).filter((f) => SIGNAL_MAP[f.id]);
   const signals = fired
     .map((f) => ({ ...f, label: SIGNAL_MAP[f.id].label, weight: weights[f.id] ?? SIGNAL_MAP[f.id].base }))
     .sort((a, b) => Math.abs(b.weight) - Math.abs(a.weight));
   const score = scoreOf(fired.map((f) => f.id), weights);
-  return { score, signals, verdict: verdictOf(score), ind };
+  return { score, signals, verdict: verdictOf(score), ind, liquid: isLiquid(ind, i), turnover: ind.turnover20[i] };
 }

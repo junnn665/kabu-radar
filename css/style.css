@@ -264,3 +264,9 @@ label.check input { width: auto; }
 
 td.warns .ev { white-space: normal; display: inline-block; margin: 0 2px 4px 0; }
 td.warns { min-width: 96px; }
+
+.regs.one { grid-template-columns: 1fr; }
+.mk.thin { color: #fdba74; border-color: #fdba7466; }
+button.wide { width: 100%; margin-top: 10px; }
+.filters label.check { flex: 1 1 100%; }
+.idxs { grid-template-columns: repeat(4, 1fr); }
