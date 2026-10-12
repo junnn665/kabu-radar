@@ -78,7 +78,7 @@ jobs:
         if: steps.fetch.outcome == 'success'
         continue-on-error: true
         env:
-          MODEL_VARIANT: ${{ vars.MODEL_VARIANT || 'A_all' }}
+          MODEL_VARIANT: ${{ vars.MODEL_VARIANT || 'B_no_market' }}
         run: |
           set -o pipefail
           TRAIN=$(python -c "import json;m=json.load(open('raw/fetch_meta.json'));print('--train' if m['history']['mode']=='full' else '')")

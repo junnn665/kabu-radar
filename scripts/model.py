@@ -164,7 +164,7 @@ VARIANTS = {
     "C_no_market_sector": {"target": "market", "drop": list(MARKET_COLS) + ["sector"]},
     "D_sector_neutral": {"target": "sector", "drop": list(MARKET_COLS)},
 }
-DEFAULT_VARIANT = os.environ.get("MODEL_VARIANT", "A_all")
+DEFAULT_VARIANT = os.environ.get("MODEL_VARIANT") or "B_no_market"  # 2026-10 の比較で最も安定（IC 0.077・上位2% +0.68%・月勝率86%）
 
 
 def add_target(df):
@@ -284,7 +284,7 @@ def main():
     model = None
     if not args.train and os.path.exists(model_path):
         meta = load(meta_path, {})
-        if meta.get("features") == cols and meta.get("variant", "A_all") == DEFAULT_VARIANT:
+        if meta.get("features") == cols and meta.get("variant", "A_all") == DEFAULT_VARIANT:  # 設計が変わったら学び直す
             model = lgb.Booster(model_file=model_path)
         else:
             print("特徴量が変わったので学習し直します")
