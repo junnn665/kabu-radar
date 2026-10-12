@@ -73,7 +73,7 @@
         <div class="legend"><i class="l5"></i>5日 <i class="l25"></i>25日 <i class="l75"></i>75日 <i class="lbb"></i>ボリンジャー±2σ</div>
 
         <div class="ai">
-          <div class="ai-head"><h3>✦ AI「なぜ今？」解説</h3><button id="d-ai-btn" class="mini">AIに聞く</button></div>
+          <div class="ai-head"><h3>✦「なぜ今？」解説</h3><div class="ai-btns"><button id="d-ai-chat" class="mini ghost">Claudeアプリで聞く</button><button id="d-ai-btn" class="mini" hidden>AIに聞く</button></div></div>
           <div id="d-ai-text"></div>
         </div>
 
@@ -175,7 +175,8 @@
       </fieldset>
 
       <fieldset>
-        <legend>AI解説（Claude）</legend>
+        <legend>AI解説（任意・有料のAPIキー）</legend>
+        <small class="muted">空欄のままで大丈夫です。無料の自動まとめと、GitHub の無料AIで解説が付きます。</small>
         <label>Anthropic APIキー <input id="s-aikey" type="password" autocomplete="off" placeholder="sk-ant-…（この端末にのみ保存）" /></label>
         <label>モデル <select id="s-aimodel"></select></label>
       </fieldset>

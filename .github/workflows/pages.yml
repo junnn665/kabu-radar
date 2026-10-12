@@ -19,6 +19,7 @@ permissions:
   contents: write   # data ブランチへの保存
   pages: write
   id-token: write
+  models: read      # GitHub Models（無料のAI解説）
 
 concurrency:
   group: kabu-radar-data
@@ -57,6 +58,8 @@ jobs:
       - name: 判定・バックテスト・ペーパートレード・AI解説を生成
         if: steps.fetch.outcome == 'success'
         env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AI_PROVIDER: ${{ vars.AI_PROVIDER }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           AI_MODEL: ${{ vars.AI_MODEL }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}

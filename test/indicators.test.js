@@ -87,3 +87,18 @@ test('AI prompt contains the essentials', () => {
     signals: [{ label: 'ゴールデンクロス', weight: 25, detail: 'x' }], events: { earnings: '2026-11-05' }, news: [{ title: '新型車' }] });
   assert.match(p, /トヨタ/); assert.match(p, /ゴールデンクロス/); assert.match(p, /2026-11-05/); assert.match(p, /新型車/);
 });
+
+test('rule-based explanation: 3 lines, mentions earnings when close', async () => {
+  const { ruleExplain } = await import('../js/explain.js');
+  const t = ruleExplain({
+    score: 40, verdict: '強い買いシグナル', today: '2026-10-12',
+    signals: [{ id: 'golden_cross', label: 'ゴールデンクロス', weight: 25 }, { id: 'macd_up', label: 'MACD 好転', weight: 15 }],
+    stats: { golden_cross: { n: 700, win: 0.48, avg: -0.0012 } },
+    events: { earnings: '2026-10-20' },
+  });
+  const lines = t.split('\n');
+  assert.equal(lines.length, 3);
+  assert.match(lines[0], /^なぜ今？：ゴールデンクロスとMACD 好転/);
+  assert.match(lines[1], /勝率48%/);
+  assert.match(lines[2], /10\/20に決算/);
+});

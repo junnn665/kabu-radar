@@ -1,7 +1,8 @@
 import { makeProvider, DemoProvider, DEMO_SYMBOLS } from './providers.js';
 import { analyze, scoreOf, verdictOf, SIGNALS, SIGNAL_MAP, BASE_WEIGHTS, STYLES, applyStyle } from './signals.js';
 import { signalStats, tuneWeights, simulate, tradeSummary, DEFAULT_RULES } from './backtest.js';
-import { explain, AI_MODELS, AI_MODEL_DEFAULT } from './ai.js';
+import { explain, chatPrompt, AI_MODELS, AI_MODEL_DEFAULT } from './ai.js';
+import { ruleExplain } from './explain.js';
 import { drawChart, sparkline, fmt } from './chart.js';
 
 // ================= 設定 =================
@@ -333,15 +334,21 @@ function renderDetail() {
     : '<li class="muted">目立ったシグナルはありません</li>';
   $('#d-score').innerHTML = a ? `総合スコア <b class="mono">${a.score}</b> ・ <span class="badge ${a.verdict.key}">${a.verdict.label}</span>` : '';
 
-  // AI 解説
+  // 「なぜ今？」解説：自分のキーで生成 ＞ Actions で自動生成（無料AI/Claude） ＞ ルールによる自動まとめ
   const cached = store.get(`kr:ai:${s}:${todayJst()}`);
   const srv = state.server.ai?.[s];
-  const aiText = cached?.text || srv?.text;
+  const srvFresh = srv && a && srv.key?.endsWith(':' + a.signals.map((x) => x.id).sort().join(','));
+  let text, note;
+  if (cached) { text = cached.text; note = `AI（あなたのキー）・${cached.date}`; }
+  else if (srvFresh) { text = srv.text; note = `AI（${srv.source || '自動生成'}）・${srv.date}`; }
+  else if (a) {
+    text = ruleExplain({ score: a.score, verdict: a.verdict.label, signals: a.signals, stats: us?.stats || {}, events: eventsOf(s), today: todayJst() });
+    note = '自動まとめ（AIなし・無料）';
+  }
   $('#d-ai-text').innerHTML = state.aiBusy
     ? '<p class="muted">Claude が考えています…</p>'
-    : aiText
-      ? aiText.split('\n').filter(Boolean).map((l) => `<p>${esc(l)}</p>`).join('') + `<small class="muted">${cached ? 'あなたのキーで生成' : '自動生成'}・${esc((cached || srv).date || '')}</small>`
-      : `<p class="muted">${state.settings.aiKey ? '「AIに聞く」でシグナル・ニュース・決算日をもとに3行で解説します。' : '設定で Anthropic APIキーを入れると、その場で解説を生成できます。'}</p>`;
+    : text ? text.split('\n').filter(Boolean).map((l) => `<p>${esc(l)}</p>`).join('') + `<small class="muted">${esc(note)}</small>` : '';
+  $('#d-ai-btn').hidden = !state.settings.aiKey;
   $('#d-ai-btn').disabled = state.aiBusy;
 
   // ニュース
@@ -359,19 +366,32 @@ function renderDetail() {
   drawChart($('#chart'), state.candles[s], a?.ind);
 }
 
+function aiContext(s) {
+  const a = state.analyses[s], q = state.quotes[s], us = universeStats();
+  return {
+    sym: s, name: nameOf(s), price: q?.price, changePct: q?.changePct, score: a.score, verdict: a.verdict.label,
+    signals: a.signals, events: eventsOf(s), news: newsOf(s),
+    stats: a.signals.map((x) => ({ label: x.label, ...(us?.stats[x.id] || {}) })).filter((x) => x.n),
+  };
+}
+
+// Claude アプリ（無料プランでも可）で聞く：質問文をコピーして claude.ai を開く
+async function askInClaudeApp() {
+  const s = state.selected;
+  if (!state.analyses[s]) return;
+  const prompt = chatPrompt(aiContext(s));
+  try { await navigator.clipboard.writeText(prompt); toast('質問文をコピーしました。開いた Claude に貼り付けて送信してください'); } catch {}
+  window.open(`https://claude.ai/new?q=${encodeURIComponent(prompt)}`, '_blank', 'noopener');
+}
+
 async function askAi() {
   const s = state.selected;
   if (!state.settings.aiKey) { toast('設定で Anthropic APIキーを入力してください'); openSettings(); return; }
-  const a = state.analyses[s], q = state.quotes[s], us = universeStats();
   state.aiBusy = true; renderDetail();
   try {
     const text = await explain({
       apiKey: state.settings.aiKey, model: state.settings.aiModel, browser: true,
-      ctx: {
-        sym: s, name: nameOf(s), price: q?.price, changePct: q?.changePct, score: a.score, verdict: a.verdict.label,
-        signals: a.signals, events: eventsOf(s), news: newsOf(s),
-        stats: a.signals.map((x) => ({ label: x.label, ...(us?.stats[x.id] || {}) })).filter((x) => x.n),
-      },
+      ctx: aiContext(s),
     });
     store.set(`kr:ai:${s}:${todayJst()}`, { text, date: todayJst() });
   } catch (e) {
@@ -547,6 +567,7 @@ $('#d-remove').addEventListener('click', () => {
 });
 $('#d-close').addEventListener('click', () => { state.selected = null; render(); });
 $('#d-ai-btn').addEventListener('click', askAi);
+$('#d-ai-chat').addEventListener('click', askInClaudeApp);
 $('#al-save').addEventListener('click', () => {
   const s = state.selected;
   const above = parseFloat($('#al-above').value), below = parseFloat($('#al-below').value);

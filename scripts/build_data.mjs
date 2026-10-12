@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { analyze, scoreOf, verdictOf, SIGNAL_MAP, BASE_WEIGHTS } from '../js/signals.js';
 import { signalStats, tuneWeights, simulate, tradeSummary, DEFAULT_RULES } from '../js/backtest.js';
-import { explain, AI_MODEL_DEFAULT } from '../js/ai.js';
+import { explain, explainGithub, AI_MODEL_DEFAULT, GH_MODEL_DEFAULT } from '../js/ai.js';
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, a, i, arr) => (a.startsWith('--') ? [...acc, [a.slice(2), arr[i + 1]]] : acc), []),
@@ -154,25 +154,30 @@ async function main() {
   writeJson(path.join(OUT, 'paper.json'), paper);
 
   // 5) AI「なぜ今？」解説（上位5銘柄、シグナルの組み合わせが変わった時だけ再生成）
+  //    ANTHROPIC_API_KEY があれば Claude（有料）、なければ GitHub Models の無料枠を使う
   const ai = { ...prevAi };
-  const aiOn = !!process.env.ANTHROPIC_API_KEY;
+  const useClaude = !!process.env.ANTHROPIC_API_KEY;
+  const useGithub = !useClaude && !!process.env.GITHUB_TOKEN && process.env.AI_PROVIDER !== 'none';
+  const aiOn = useClaude || useGithub;
+  let aiFailures = 0;
   if (aiOn) {
     for (const r of rows.filter((x) => x.score >= 20).slice(0, 5)) {
       const key = `${jstDate}:${[...r.ids].sort().join(',')}`;
       if (ai[r.sym]?.key === key) continue;
+      if (aiFailures >= 2) break; // 無料枠の上限などで失敗が続いたら今回は諦める
+      const ctx = {
+        sym: r.sym, name: r.name, price: r.price, changePct: r.changePct, score: r.score,
+        verdict: verdictOf(r.score).label, events: r.events, news: news[r.sym],
+        signals: r.ids.map((id) => ({ label: SIGNAL_MAP[id].label, weight: BASE_WEIGHTS[id], detail: r.details[id] })),
+        stats: r.ids.map((id) => ({ label: SIGNAL_MAP[id].label, ...bt.stats[id] })).filter((s) => s.n),
+      };
       try {
-        const text = await explain({
-          apiKey: process.env.ANTHROPIC_API_KEY,
-          model: process.env.AI_MODEL || AI_MODEL_DEFAULT,
-          ctx: {
-            sym: r.sym, name: r.name, price: r.price, changePct: r.changePct, score: r.score,
-            verdict: verdictOf(r.score).label, events: r.events, news: news[r.sym],
-            signals: r.ids.map((id) => ({ label: SIGNAL_MAP[id].label, weight: BASE_WEIGHTS[id], detail: r.details[id] })),
-            stats: r.ids.map((id) => ({ label: SIGNAL_MAP[id].label, ...bt.stats[id] })).filter((s) => s.n),
-          },
-        });
-        ai[r.sym] = { key, date: jstDate, text, generatedAt: now.toISOString() };
+        const text = useClaude
+          ? await explain({ apiKey: process.env.ANTHROPIC_API_KEY, model: process.env.AI_MODEL || AI_MODEL_DEFAULT, ctx })
+          : await explainGithub({ token: process.env.GITHUB_TOKEN, model: process.env.GH_MODEL || GH_MODEL_DEFAULT, ctx });
+        if (text) ai[r.sym] = { key, date: jstDate, text, source: useClaude ? 'Claude' : 'GitHub Models', generatedAt: now.toISOString() };
       } catch (e) {
+        aiFailures++;
         console.warn(`AI ${r.sym}:`, e.message);
       }
     }
@@ -208,7 +213,7 @@ async function main() {
   writeJson(path.join(OUT, 'notified.json'), notified);
 
   writeJson(path.join(OUT, 'meta.json'), {
-    updatedAt: now.toISOString(), symbols: syms.length, ai: aiOn, ntfy: !!process.env.NTFY_TOPIC,
+    updatedAt: now.toISOString(), symbols: syms.length, ai: aiOn ? (useClaude ? 'Claude' : 'GitHub Models') : false, ntfy: !!process.env.NTFY_TOPIC,
     eventsDate: eventsDoc.date || null,
   });
   console.log(`built ${syms.length} symbols; strong=${rows.filter((r) => r.score >= 40).length}; paper open=${paper.open.length} (+${opened.length}/-${closedNow.length})`);

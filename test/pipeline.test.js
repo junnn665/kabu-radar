@@ -24,7 +24,7 @@ test('build_data generates all files and keeps paper-trade state between runs', 
   fs.writeFileSync(path.join(raw, 'news.json'), JSON.stringify({ date: 'x', news: { [uni[0].sym]: [{ title: 'テスト' }] } }));
 
   const run = (prev, out) => execFileSync('node', ['scripts/build_data.mjs', '--raw', raw, '--prev', prev, '--out', out], {
-    cwd: root, env: { ...process.env, ANTHROPIC_API_KEY: '', NTFY_TOPIC: '' }, encoding: 'utf8',
+    cwd: root, env: { ...process.env, ANTHROPIC_API_KEY: '', NTFY_TOPIC: '', AI_PROVIDER: 'none' }, encoding: 'utf8',
   });
   run(path.join(tmp, 'none'), out1);
   for (const f of ['quotes', 'screener', 'backtest', 'paper', 'events', 'news', 'ai', 'meta']) {
