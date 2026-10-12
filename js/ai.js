@@ -54,24 +54,39 @@ export async function explain({ apiKey, model = AI_MODEL_DEFAULT, ctx, browser =
 }
 
 // GitHub Models（GitHub Actions の GITHUB_TOKEN で使える無料枠。キー登録・課金不要）
+// エンドポイントが変わることがあるため、既知の2つを順に試す
 export const GH_MODEL_DEFAULT = 'openai/gpt-4.1-mini';
+const GH_ENDPOINTS = [
+  { url: 'https://models.github.ai/inference/chat/completions', model: (m) => m },
+  { url: 'https://models.inference.ai.azure.com/chat/completions', model: (m) => m.replace(/^[^/]+\//, '') },
+];
 export async function explainGithub({ token, model = GH_MODEL_DEFAULT, ctx }) {
-  const r = await fetch('https://models.github.ai/inference/chat/completions', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, accept: 'application/vnd.github+json' },
-    body: JSON.stringify({
-      model,
-      max_tokens: 400,
-      messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: buildPrompt(ctx) }],
-    }),
-  });
-  const raw = await r.text();
-  let j = {};
-  try { j = JSON.parse(raw); } catch {}
-  if (!r.ok) throw new Error(j?.error?.message || j?.message || `HTTP ${r.status}: ${raw.slice(0, 200)}`);
-  const text = (j.choices?.[0]?.message?.content || '').trim();
-  if (!text) throw new Error(`空の応答 HTTP ${r.status} ${r.headers.get('content-type')}: ${raw.slice(0, 300)}`);
-  return text;
+  const errors = [];
+  for (const ep of GH_ENDPOINTS) {
+    try {
+      const r = await fetch(ep.url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json', accept: 'application/json',
+          authorization: `Bearer ${token}`, 'x-github-api-version': '2022-11-28',
+        },
+        body: JSON.stringify({
+          model: ep.model(model),
+          max_tokens: 400,
+          messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: buildPrompt(ctx) }],
+        }),
+      });
+      const raw = await r.text();
+      let j = {};
+      try { j = JSON.parse(raw); } catch {}
+      const text = (j.choices?.[0]?.message?.content || '').trim();
+      if (r.ok && text) return text;
+      errors.push(`${new URL(ep.url).host} HTTP ${r.status}: ${(j?.error?.message || raw).slice(0, 150)}`);
+    } catch (e) {
+      errors.push(`${new URL(ep.url).host}: ${e.message}`);
+    }
+  }
+  throw new Error(errors.join(' | '));
 }
 
 // Claude アプリで聞くための質問文（コピー＆貼り付け用）
