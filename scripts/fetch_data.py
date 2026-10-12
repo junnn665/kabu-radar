@@ -11,6 +11,7 @@ import calendar
 import datetime as dt
 import json
 import math
+import re
 import os
 import sys
 import time
@@ -112,6 +113,9 @@ def parse_news(items):
     return out[:6]
 
 
+NOISE = re.compile(r"掲示板|株価・株式情報|株価チャート|リアルタイム株価|株価・銘柄|stock price, quote|Stock Price & News")
+
+
 def google_news(u):
     """Google ニュースの RSS から見出しを取得（日本株は日本語、米国株は英語）。"""
     if u.get("market") == "JP":
@@ -129,6 +133,8 @@ def google_news(u):
         publisher = src.text if src is not None else None
         if publisher and title.endswith(" - " + publisher):
             title = title[: -len(publisher) - 3]
+        if NOISE.search(title):
+            continue
         when = item.findtext("pubDate")
         try:
             when = parsedate_to_datetime(when).isoformat() if when else None
