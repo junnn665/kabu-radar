@@ -8,6 +8,7 @@ import { levels, holdingLevels } from './levels.js';
 import { marketOf } from './market.js';
 import { computeReview } from './review.js';
 import { decodeCsv, parseCsvText, extractHoldings } from './csvimport.js';
+import { dividendPlan, concentration, upcoming, TAX } from './portfolio.js';
 
 const DEFAULT_REPO = 'junnn665/kabu-radar';
 
@@ -28,6 +29,8 @@ const DEFAULTS = {
   holdings: [],       // [{ id, sym, shares, cost, date }]
   marketFilter: false, // 地合いフィルター（検証で逆効果だったため標準はオフ）
   method: 'auto',      // 判定方式：'auto'（検証成績が良い方）| 'ai'（AI予測）| 'points'（シグナル点数）
+  horizon: 5,          // AI予測の期間：5（1週間）| 20（1か月）
+  memos: {},           // 売買メモ { sym: [{ date, text, price, p5, p20 }] }
   v: 4,
 };
 const store = {
@@ -102,7 +105,16 @@ function aiIsBetter() {
   return pts?.excess == null || ai.excess > pts.excess;
 }
 const useAI = () => !!state.server.model?.report && (state.settings.method === 'ai' || (state.settings.method !== 'points' && aiIsBetter()));
-const aiOf = (s) => { const r = rowOf(s); return r?.pred != null ? { pred: r.pred, rank: r.aiRank } : null; };
+// 予測期間：5営業日（1週間）か20営業日（1か月）。ホームの切り替えで全体の並び順が変わる
+const H20 = () => state.settings.horizon === 20 && !!state.server.model20?.report;
+const predOf = (r) => (H20() ? r?.pred20 : r?.pred) ?? null;
+const rankOf = (r) => (H20() ? r?.aiRank20 : r?.aiRank) ?? null;
+const hLabel = () => (H20() ? '1か月' : '1週間');
+const aiOf = (s) => {
+  const r = rowOf(s);
+  const p = predOf(r);
+  return p != null ? { pred: p, rank: rankOf(r), p5: r.pred, r5: r.aiRank, p20: r.pred20, r20: r.aiRank20 } : null;
+};
 function aiVerdict(rank) {
   if (rank == null) return VERDICTS.find((v) => v.key === 'neutral');
   if (rank >= 0.98) return VERDICTS[0];
@@ -112,6 +124,9 @@ function aiVerdict(rank) {
 }
 const LEVEL = { strong: 3, watch: 2, neutral: 1, caution: 0 };
 const topPct = (rank) => (rank == null ? '' : rank >= 0.995 ? '上位0.5%' : rank >= 0.5 ? `上位${Math.max(1, Math.round((1 - rank) * 100))}%` : `下位${Math.max(1, Math.round(rank * 100))}%`);
+const signedPct = (p, d = 1) => (p == null ? '—' : `${p > 0 ? '+' : ''}${p.toFixed(d)}%`);
+// 1週間・1か月の両方を並べた小さい表示
+const aiBoth = (ai) => (ai ? `<span class="aiboth mono"><span class="${sign(ai.p5)}">1週 ${signedPct(ai.p5)}</span>${ai.p20 != null ? ` <span class="${sign(ai.p20)}">1か月 ${signedPct(ai.p20)}</span>` : ''}</span>` : '');
 const aiLabel = (ai) => (ai ? `<span class="ai-chip ${sign(ai.pred)}">AI ${ai.pred > 0 ? '+' : ''}${ai.pred.toFixed(2)}%</span>` : '');
 
 // ================= 地合い =================
@@ -135,7 +150,7 @@ const nameOf = (s) => state.universe?.get(s)?.name || state.quotes[s]?.name || s
 
 async function loadServer() {
   if (!state.provider.static) { state.server = {}; return; }
-  const files = ['screener', 'backtest', 'paper', 'paper_ai', 'news', 'ai', 'meta', 'market', 'review', 'model', 'ai_reasons', 'ai_track'];
+  const files = ['screener', 'backtest', 'paper', 'paper_ai', 'news', 'ai', 'meta', 'market', 'review', 'model', 'model20', 'ai_reasons', 'ai_track', 'dividends'];
   if (!state.universe) {
     try {
       const u = await state.provider.json('universe.json', { fresh: true });
@@ -419,7 +434,7 @@ const predText = (p, d = 1) => `${p > 0 ? '+' : ''}${p.toFixed(d)}%`;
 
 // 今日のAIピック：売買代金のある全銘柄から、AI予測の高い順（同じ業種は2銘柄まで）
 function aiPicks(n = 5) {
-  const rows = (state.server.screener?.rows || []).filter((r) => r.liquid && r.pred != null).sort((a, b) => b.pred - a.pred);
+  const rows = (state.server.screener?.rows || []).filter((r) => r.liquid && predOf(r) != null).sort((a, b) => predOf(b) - predOf(a));
   const out = [], per = {};
   for (const r of rows) {
     const k = r.sector || '-';
@@ -433,15 +448,18 @@ function aiPicks(n = 5) {
 
 function renderPicks() {
   const picks = useAI() ? aiPicks(5) : [];
+  const hz = $('#hz');
+  hz.hidden = !picks.length || !state.server.model20?.report;
+  hz.querySelectorAll('[data-h]').forEach((b) => b.classList.toggle('on', Number(b.dataset.h) === (H20() ? 20 : 5)));
   if (picks.length) {
     $('#picks-title').textContent = '今日のAIピック';
-    $('#picks-sub').textContent = '5日後に市場平均を上回る予測・高い順';
+    $('#picks-sub').textContent = H20() ? '1か月後（20営業日）に市場平均を上回る予測・高い順' : '1週間後（5営業日）に市場平均を上回る予測・高い順';
     const [top, ...rest] = picks;
     $('#picks').innerHTML = `
       <button class="hero" data-scr="${esc(top.sym)}">
         <div class="hero-head">
           <div><div class="code mono">${esc(top.sym)}${top.seg ? `・${segName(top.seg)}` : ''}</div><div class="hero-name">${esc(top.name)}</div></div>
-          <div class="hero-ai"><b class="mono">${predText(top.pred)}</b><small>AI予測・${topPct(top.aiRank)}</small></div>
+          <div class="hero-ai"><b class="mono">${predText(predOf(top))}</b><small>${hLabel()}先・${topPct(rankOf(top))}</small>${H20() ? (top.pred != null ? `<small>1週間先 ${predText(top.pred)}</small>` : '') : (top.pred20 != null ? `<small>1か月先 ${predText(top.pred20)}</small>` : '')}</div>
         </div>
         <div class="chips">${reasonChips(top.sym)}</div>
         <div class="hero-foot">
@@ -451,7 +469,7 @@ function renderPicks() {
       </button>
       ${rest.map((r) => `<button class="row" data-scr="${esc(r.sym)}">
         <span class="row-main"><span class="row-name">${esc(r.name)}</span><span class="code mono">${esc(r.sym)}</span></span>
-        <span class="row-ai mono">${predText(r.pred)}</span>
+        <span class="row-ai mono">${predText(predOf(r))}</span>
       </button>`).join('')}`;
     return;
   }
@@ -475,7 +493,7 @@ function meter(sc) {
 // ウォッチリスト：AI予測の高い順
 function renderTable() {
   const ai = useAI();
-  $('#watch-sort').textContent = ai ? 'AI予測の高い順' : '';
+  $('#watch-sort').textContent = ai ? `AI予測（${hLabel()}先）の高い順` : '';
   const list = [...state.settings.watchlist].sort((x, y) => (ai ? (aiOf(y)?.pred ?? -99) - (aiOf(x)?.pred ?? -99) : 0));
   $('#rows').innerHTML = list.map((s) => {
     const q = state.quotes[s], a = state.analyses[s], cs = state.candles[s];
@@ -518,13 +536,20 @@ function renderDetail() {
     ? a.signals.map((x) => `<li class="${x.weight > 0 ? 'pos' : 'neg'}"><b class="mono">${x.weight > 0 ? '+' : ''}${x.weight}</b><div><strong>${esc(x.label)}</strong><small>${esc(x.detail)}</small>
         <small class="bt">${[statLine(ss?.stats[x.id], 'この銘柄:'), statLine(us?.stats[x.id], '全銘柄:')].filter(Boolean).join(' ／ ') || '過去データ不足'}</small></div></li>`).join('')
     : '<li class="muted">目立ったシグナルはありません</li>';
-  const mr = state.server.model?.report;
-  $('#d-aipred').innerHTML = a?.ai ? `<div class="aipred">
-      <small>AI予測（5営業日後・市場平均との差）</small>
-      <b class="mono ${a.ai.pred >= 0 ? 'aiup' : 'down'}">${a.ai.pred > 0 ? '+' : ''}${a.ai.pred.toFixed(2)}%</b>
-      <span class="aipos">${a.ai.rank != null ? `売買代金のある銘柄の中で${topPct(a.ai.rank)}` : '売買代金が少ないため順位の対象外'}</span>
+  const mr = state.server.model?.report, mr20 = state.server.model20?.report;
+  const x = a?.ai;
+  const hcell = (p, r, label, rep) => (p == null ? '' : `<div class="hcell">
+      <small>${label}</small>
+      <b class="mono ${p >= 0 ? 'aiup' : 'down'}">${signedPct(p, 2)}</b>
+      <span class="aipos">${r != null ? topPct(r) : '順位の対象外'}</span>
+      ${rep?.top2pct ? `<small class="muted">上位2%の過去成績 平均${pctf(rep.top2pct.excess, 1)}・勝率${Math.round(rep.top2pct.win * 100)}%</small>` : ''}
+    </div>`);
+  $('#d-aipred').innerHTML = x ? `<div class="aipred">
+      <small>AI予測（市場平均との差・売買代金のある銘柄の中での順位）</small>
+      <div class="hgrid">${hcell(x.p5, x.r5, '1週間先（5営業日）', mr)}${hcell(x.p20, x.r20, '1か月先（20営業日）', mr20)}</div>
+      ${x.r5 == null && x.p5 != null ? '<small class="muted">売買代金が少ないため順位の対象外です</small>' : ''}
       ${reasonsHtml(s)}
-      ${mr?.top2pct ? `<small class="muted">このモデルの上位2%は、学習に使っていない期間で平均${pctf(mr.top2pct.excess, 2)}・勝率${Math.round(mr.top2pct.win * 100)}%（${mr.from}〜）</small>` : ''}
+      ${mr?.from ? `<small class="muted">過去成績は学習に使っていない期間（${mr.from}〜）での結果です。</small>` : ''}
     </div>` : '';
   $('#d-score').innerHTML = a ? `シグナル点数 <b class="mono">${a.score}</b> ・ <span class="badge ${a.verdict.key}">${a.verdict.label}</span>${useAI() && a.ai ? '<small class="muted pen">判定はAI予測の順位で表示中（設定で変更）</small>' : ''}`
     + (a.penalty ? `<small class="muted pen">地合いで −${a.penalty}点（元 ${a.rawScore}点）</small>` : '') : '';
@@ -547,6 +572,8 @@ function renderDetail() {
     : text ? text.split('\n').filter(Boolean).map((l) => `<p>${esc(l)}</p>`).join('') + `<small class="muted">${esc(note)}</small>` : '';
   $('#d-ai-btn').hidden = !state.settings.aiKey;
   $('#d-ai-btn').disabled = state.aiBusy;
+
+  renderMemos(s);
 
   // ニュース
   const ns = newsOf(s);
@@ -608,7 +635,7 @@ function screenerRows() {
   return rows.map((r) => {
     const pen = penaltyFor(r.sym);
     const score = Math.max(-100, scoreOf(r.ids, w) - pen);
-    const verdict = useAI() && r.pred != null ? aiVerdict(r.liquid ? r.aiRank : null) : verdictOf(score);
+    const verdict = useAI() && predOf(r) != null ? aiVerdict(r.liquid ? rankOf(r) : null) : verdictOf(score);
     return { ...r, score, penalty: pen, verdict };
   });
 }
@@ -627,7 +654,7 @@ function renderScreener() {
     .filter((r) => LEVEL[r.verdict.key] >= f.min)
     .filter((r) => !q || r.sym.toLowerCase().includes(q) || r.name.toLowerCase().includes(q))
     .filter((r) => FUNDA_FILTERS[f.funda].test(r))
-    .sort((a, b) => (useAI() ? (b.pred ?? -99) - (a.pred ?? -99) : b.score - a.score));
+    .sort((a, b) => (useAI() ? (predOf(b) ?? -99) - (predOf(a) ?? -99) : b.score - a.score));
   const shown = rows.slice(0, f.limit);
   $('#scr-count').textContent = `${rows.length.toLocaleString()}件${rows.length > shown.length ? `（上位${shown.length}件を表示）` : ''}`;
   $('#scr-more').hidden = rows.length <= shown.length;
@@ -637,7 +664,7 @@ function renderScreener() {
         return `<tr data-scr="${esc(r.sym)}">
           <td><div class="sym">${esc(r.sym)} ${r.seg ? `<span class="mk">${{ P: 'プ', S: 'ス', G: 'グ' }[r.seg] || ''}</span>` : ''}${r.liquid === false ? '<span class="mk thin">薄商い</span>' : ''}</div><div class="nm">${esc(r.name)}</div><div class="evs">${eventChips(r.sym)}</div></td>
           <td class="mono num">${fmt(r.price)}<div class="${sign(r.changePct)} small">${pct(r.changePct)}</div></td>
-          <td>${useAI() && r.pred != null ? `${aiLabel({ pred: r.pred })}<div class="nm">${r.liquid ? topPct(r.aiRank) : '順位対象外'}</div>` : meter(r.score)}<div><span class="badge ${r.verdict.key}">${r.verdict.label}</span></div></td>
+          <td>${useAI() && predOf(r) != null ? `${aiLabel({ pred: predOf(r) })}<div class="nm">${hLabel()}・${r.liquid ? topPct(rankOf(r)) : '順位対象外'}</div>` : meter(r.score)}<div><span class="badge ${r.verdict.key}">${r.verdict.label}</span></div></td>
           <td class="small fnd"><div>PER ${r.per != null ? r.per.toFixed(1) : '—'}</div><div>PBR ${r.pbr != null ? r.pbr.toFixed(2) : '—'}</div><div>利回り ${r.divYield != null ? (r.divYield * 100).toFixed(1) + '%' : '—'}</div></td>
           <td class="hide-sm small">${r.ids.map((id) => esc(SIGNAL_MAP[id].label)).join('、') || '—'}</td>
           <td><button class="mini ${inList ? 'ghost' : ''}" data-add="${esc(r.sym)}">${inList ? '✓' : '＋'}<span class="hide-sm">${inList ? '登録済' : '監視'}</span></button></td>
@@ -738,7 +765,7 @@ function holdingView(h) {
   const warns = [];
   // 売り時：AI予測が下位（今後5日で市場平均に負けそう）なら売り候補。下位2%は検証で平均−3%
   const ai = aiOf(h.sym);
-  if (ai?.rank != null && ai.rank <= 0.1) warns.push({ hot: ai.rank <= 0.05, sell: true, text: `AI売り候補（${topPct(ai.rank)}・${ai.pred > 0 ? '+' : ''}${ai.pred.toFixed(1)}%予測）` });
+  if (ai?.r5 != null && ai.r5 <= 0.1) warns.push({ hot: ai.r5 <= 0.05, sell: true, text: `AI売り候補（1週間先 ${topPct(ai.r5)}・${signedPct(ai.p5)}予測）` });
   if (a) {
     if (a.score <= -20) warns.push({ hot: true, text: `売りシグナル（点数${a.score}）` });
     for (const x of a.signals) if (['dead_cross', 'trend_break', 'short_overbought', 'vol_surge_down', 'bb_upper'].includes(x.id)) warns.push({ text: x.label });
@@ -768,13 +795,96 @@ function renderHoldings() {
       <td><div class="sym">${esc(h.sym)}</div><div class="nm">${esc(nameOf(h.sym))}</div><div class="nm show-sm mono">${h.shares.toLocaleString()}株 @${fmt(h.cost)}</div>${h.a ? `<span class="badge ${h.a.verdict.key}">${h.a.verdict.label}</span>` : ''}</td>
       <td class="num small hide-sm"><div class="mono">${h.shares.toLocaleString()}株</div><div class="mono muted">@${fmt(h.cost)}</div></td>
       <td class="num">${h.price != null ? `<div class="mono">${fmt(h.price)}${h.manual ? '<small class="muted">手入力</small>' : ''}</div>` : `<input class="mprice" type="number" step="any" inputmode="decimal" placeholder="現在値" data-mprice="${esc(h.id)}" />`}
-        <div class="mono small">${h.value != null ? money(h.value, h.cur) : ''}</div>${h.ai ? `<div>${aiLabel(h.ai)}</div>` : ''}</td>
+        <div class="mono small">${h.value != null ? money(h.value, h.cur) : ''}</div>${h.ai ? `<div>${aiBoth(h.ai)}</div>` : ''}</td>
       <td class="num ${sign(h.pnl)}"><div class="mono">${h.pnl != null ? (h.pnl >= 0 ? '+' : '−') + money(Math.abs(h.pnl), h.cur) : '—'}</div><div class="mono small">${pctf(h.pnlPct)}</div></td>
       <td class="hide-sm small">${h.lv ? `<div>損切り <b class="mono">${fmt(h.lv.stop)}</b></div><div>利確 <b class="mono">${fmt(h.lv.target)}</b></div>` : ''}</td>
       <td class="small warns">${h.warns.length ? h.warns.map((w) => `<span class="ev ${w.hot ? 'hot' : ''}">${esc(w.text)}</span>`).join(' ') : '<span class="muted">—</span>'}
         <div><button class="mini ghost" data-del-hold="${esc(h.id)}">削除</button></div></td>
     </tr>`).join('')
     : '<tr><td colspan="6" class="muted">まだ登録がありません。上のフォームか「CSVから取り込む」で登録してください。</td></tr>';
+  renderMix(list);
+  renderDividends(list);
+  renderCalendar();
+  renderAllMemos();
+}
+
+const sectorOf = (s) => rowOf(s)?.sector || state.universe?.get(s)?.sector || null;
+const bar = (w, cls = '') => `<div class="wbar ${cls}"><i style="width:${Math.min(100, w * 100).toFixed(1)}%"></i></div>`;
+
+// 偏りチェック：業種40%超・1銘柄30%超で注意
+function renderMix(list) {
+  const fx = fxRate();
+  const c = concentration(list.map((h) => ({ sym: h.sym, sector: sectorOf(h.sym), value: h.value != null ? h.value * (h.cur === 'USD' ? fx || 0 : 1) : 0 })));
+  $('#hold-mix-sec').hidden = c.stocks.length < 1;
+  if (!c.stocks.length) return;
+  const warnText = c.warns.map((w) => (w.kind === 'sector'
+    ? `「${esc(w.name)}」が${Math.round(w.w * 100)}%（目安40%以下）`
+    : `${esc(nameOf(w.sym))} 1銘柄で${Math.round(w.w * 100)}%（目安30%以下）`)).join('・');
+  $('#hold-mix').innerHTML = `
+    ${c.warns.length ? `<p class="warn">⚠ 偏りがあります：${warnText}。同じ業種は一緒に下がりやすいので、下落時の痛手が大きくなります。</p>`
+      : c.stocks.length > 1 ? '<p class="muted small">✓ 業種・銘柄の偏りは目安の範囲内です。</p>' : ''}
+    <div class="mix">
+      <div><h3>業種別</h3>${c.sectors.map((x) => `<div class="mixrow"><span>${esc(x.name)}</span>${bar(x.w, x.w > 0.4 ? 'hot' : '')}<span class="mono">${Math.round(x.w * 100)}%</span></div>`).join('')}</div>
+      <div><h3>銘柄別</h3>${c.stocks.map((x) => `<div class="mixrow"><span>${esc(nameOf(x.sym))}</span>${bar(x.w, x.w > 0.3 && c.stocks.length > 1 ? 'hot' : '')}<span class="mono">${Math.round(x.w * 100)}%</span></div>`).join('')}</div>
+    </div>
+    <p class="muted small">実質的な分散銘柄数 <b class="mono">${c.effectiveN.toFixed(1)}</b>（全部同じ金額なら銘柄数と同じ。少ないほど一部の銘柄に偏っています）</p>`;
+}
+
+// 配当金の見込み：過去12か月の1株配当 × 株数
+function renderDividends(list) {
+  const divs = state.server.dividends;
+  const jp = list.filter((h) => h.cur === 'JPY');
+  $('#hold-div-sec').hidden = !divs || !jp.length;
+  if (!divs || !jp.length) return;
+  const plan = dividendPlan(jp, divs, todayJst());
+  const maxM = Math.max(...plan.months, 1);
+  const paying = plan.rows.filter((r) => r.annual > 0);
+  const nextEx = jp.map((h) => ({ sym: h.sym, e: eventsOf(h.sym) })).filter((x) => x.e?.exDiv && x.e.exDiv >= todayJst()).sort((a, b) => a.e.exDiv.localeCompare(b.e.exDiv))[0];
+  $('#hold-div').innerHTML = `<div class="kpis">
+      <div><small>年間の配当（税引前）</small><b>¥${Math.round(plan.total).toLocaleString('ja-JP')}</b><small>月あたり 約¥${Math.round(plan.total / 12).toLocaleString('ja-JP')}</small></div>
+      <div><small>特定口座なら（税引後）</small><b>¥${Math.round(plan.afterTax).toLocaleString('ja-JP')}</b><small>税率${(TAX * 100).toFixed(3)}%。NISA分は非課税</small></div>
+      ${nextEx ? `<div><small>次の権利落ち</small><b class="small-b">${esc(nextEx.e.exDiv.slice(5).replace('-', '/'))}</b><small>${esc(nameOf(nextEx.sym))}${nextEx.e.exDivEstimated ? '（推定）' : ''}・前日までに保有</small></div>` : ''}
+    </div>
+    <h3>権利落ちの月（この月に持っていると配当がもらえる）</h3>
+    <div class="dcal">${plan.months.map((v, i) => `<div class="dm ${v ? 'on' : ''}"><div class="dbar"><i style="height:${(v / maxM) * 100}%"></i></div><span class="mono">${i + 1}月</span><small class="mono">${v ? `¥${v >= 10000 ? `${(v / 10000).toFixed(1)}万` : Math.round(v).toLocaleString('ja-JP')}` : ''}</small></div>`).join('')}</div>
+    <div class="table-wrap"><table class="compact"><thead><tr><th>銘柄</th><th class="num">1株配当</th><th class="num">年間</th><th class="num hide-sm">取得利回り</th><th>月</th></tr></thead><tbody>
+    ${paying.map((r) => `<tr data-sym="${esc(r.sym)}"><td>${esc(nameOf(r.sym))}</td><td class="num mono">${fmt(r.perShare)}</td><td class="num mono">¥${Math.round(r.annual).toLocaleString('ja-JP')}</td><td class="num mono hide-sm">${r.yieldOnCost != null ? (r.yieldOnCost * 100).toFixed(2) + '%' : '—'}</td><td class="small">${r.months.map((m) => `${m}月`).join('・')}</td></tr>`).join('')}
+    ${plan.rows.filter((r) => !r.annual).length ? `<tr><td colspan="5" class="muted small">過去12か月に配当なし：${plan.rows.filter((r) => !r.annual).map((r) => esc(nameOf(r.sym))).join('・')}</td></tr>` : ''}
+    </tbody></table></div>
+    <p class="muted small">過去12か月の実績が来年も同じと仮定した目安です（増配・減配・記念配当は反映されません）。入金は権利確定のおよそ2〜3か月後です。</p>`;
+}
+
+// 予定カレンダー：保有株とウォッチリストの決算・権利落ち（60日先まで）
+function renderCalendar() {
+  const held = new Set(state.settings.holdings.map((h) => h.sym));
+  const syms = [...new Set([...held, ...state.settings.watchlist])];
+  const ev = upcoming(syms.map((s) => ({ sym: s, tag: held.has(s) ? 'hold' : 'watch', events: eventsOf(s) })), todayJst(), 60);
+  const wd = (d) => '日月火水木金土'[new Date(d + 'T00:00:00+09:00').getDay()];
+  let last = '';
+  $('#hold-cal').innerHTML = ev.length ? `<ul class="cal">${ev.map((x) => {
+    const head = x.date !== last ? `<li class="cal-day"><b class="mono">${x.date.slice(5).replace('-', '/')}</b>（${wd(x.date)}）<small class="muted">${x.days === 0 ? '今日' : `あと${x.days}日`}</small></li>` : '';
+    last = x.date;
+    return `${head}<li class="cal-ev" data-sym="${esc(x.sym)}"><span class="ev ${x.kind === 'earnings' ? 'hot' : ''}">${x.kind === 'earnings' ? '決算' : `権利落ち${x.estimated ? '(推定)' : ''}`}</span>
+      <span>${esc(nameOf(x.sym))} <small class="muted mono">${esc(x.sym)}</small></span><span class="tag ${x.tag}">${x.tag === 'hold' ? '保有' : '監視'}</span></li>`;
+  }).join('')}</ul><p class="muted small">決算の前後は値動きが荒くなりやすいです。権利落ち日の前日までに持っていると配当・優待がもらえます（権利落ち日は株価が配当分ほど下がりやすい）。</p>`
+    : '<p class="muted small">60日以内に予定はありません（日付は東証の決算発表予定と、過去の配当実績からの推定です）。</p>';
+}
+
+// ---------- 売買メモ ----------
+const memosOf = (s) => state.settings.memos?.[s] || [];
+const memoLine = (s, m) => {
+  const now = state.quotes[s]?.price ?? state.candles[s]?.at(-1)?.close ?? rowOf(s)?.price;
+  const ch = now != null && m.price ? now / m.price - 1 : null;
+  return `<div class="memo-meta"><span class="mono">${esc(m.date)}</span>${m.price ? `<span class="mono">そのとき ${fmt(m.price)}</span>` : ''}${ch != null ? `<span class="mono ${sign(ch)}">今 ${pctf(ch)}</span>` : ''}${m.p5 != null ? `<span class="muted mono">AI予測 1週${signedPct(m.p5)}${m.p20 != null ? `・1か月${signedPct(m.p20)}` : ''}</span>` : ''}</div>`;
+};
+function renderMemos(s) {
+  $('#d-memos').innerHTML = memosOf(s).slice().reverse().map((m) => `<li>${memoLine(s, m)}<p>${esc(m.text)}</p><button class="mini ghost" data-del-memo="${esc(m.id)}">削除</button></li>`).join('')
+    || '<li class="muted small">買った理由・売る条件を書いておくと、あとで振り返れます。</li>';
+}
+function renderAllMemos() {
+  const all = Object.entries(state.settings.memos || {}).flatMap(([s, ms]) => ms.map((m) => ({ s, m }))).sort((a, b) => (b.m.ts || 0) - (a.m.ts || 0));
+  $('#memo-all-sec').hidden = !all.length;
+  $('#memo-all').innerHTML = `<ul class="memos">${all.slice(0, 30).map(({ s, m }) => `<li data-scr="${esc(s)}"><b>${esc(nameOf(s))}</b> <small class="muted mono">${esc(s)}</small>${memoLine(s, m)}<p>${esc(m.text)}</p></li>`).join('')}</ul>`;
 }
 
 // ---------- 証券会社CSVの取り込み ----------
@@ -896,29 +1006,28 @@ function reasonsHtml(s) {
     ${rs.map(([k, c, v]) => `<div class="rs ${c >= 0 ? 'pos' : 'neg'}"><b class="mono">${c >= 0 ? '+' : ''}${c.toFixed(2)}%</b><span>${esc(FEATURE_JA[k] || k)}${reasonValue(k, v) ? `：${esc(reasonValue(k, v))}` : ''}</span></div>`).join('')}</div>`;
 }
 
-function aiModelSection() {
-  const m = state.server.model;
+function aiModelSection(m = state.server.model, days = 5) {
   const r = m?.report;
-  if (!r) return '<p class="muted small">AI予測モデルの検証結果は、毎朝の学習後に表示されます。</p>';
+  const hname = days === 20 ? '1か月先（20営業日）' : '1週間先（5営業日）';
+  if (!r) return days === 20 ? '' : '<p class="muted small">AI予測モデルの検証結果は、毎朝の学習後に表示されます。</p>';
   const maxAbs = Math.max(...r.deciles.map((d) => Math.abs(d.excess)), 1e-6);
   const strong = state.server.backtest?.walkForward?.base;
   return `
-    <h3>AI予測モデル（LightGBM）の成績 <small class="muted">学習に使っていない期間 ${esc(r.from)}〜${esc(r.to)}</small></h3>
-    <p class="muted small">毎朝、約3年分・全銘柄のデータで「5営業日後に市場平均をどれだけ上回るか」を学習。検証では20営業日ごとに、その時点で分かっていたデータだけで学び直して次の期間を予測しています。最新の学習：${esc(m.model?.trainedAt?.slice(0, 16).replace('T', ' ') || '—')}（${(m.model?.rows || 0).toLocaleString()}件）</p>
+    <h3>AI予測モデル（${hname}）の成績 <small class="muted">学習に使っていない期間 ${esc(r.from)}〜${esc(r.to)}</small></h3>
+    <p class="muted small">毎朝、約3年分・全銘柄のデータで「${days}営業日後に市場平均をどれだけ上回るか」を学習。検証では20営業日ごとに、その時点で分かっていたデータだけで学び直して次の期間を予測しています。最新の学習：${esc(m.model?.trainedAt?.slice(0, 16).replace('T', ' ') || '—')}（${(m.model?.rows || 0).toLocaleString()}件）</p>
     <div class="kpis">
       <div><small>予測上位2%（市場平均との差）</small><b class="${sign(r.top2pct.excess)}">${pctf(r.top2pct.excess, 2)}</b><small>${r.top2pct.n.toLocaleString()}回・勝率${Math.round(r.top2pct.win * 100)}%</small></div>
       <div><small>毎日の上位10銘柄</small><b class="${sign(r.top[0].excess)}">${pctf(r.top[0].excess, 2)}</b><small>勝率${Math.round(r.top[0].win * 100)}%・平均${pctf(r.top[0].avg, 2)}</small></div>
       <div><small>予測下位2%</small><b class="${sign(r.bottom2pct.excess)}">${pctf(r.bottom2pct.excess, 2)}</b><small>${r.bottom2pct.n.toLocaleString()}回</small></div>
       <div><small>予測と結果の相関（IC）</small><b>${r.ic.toFixed(3)}</b><small>プラスの日 ${Math.round(r.icPositiveDays * 100)}%</small></div>
-      ${strong?.n ? `<div><small>参考：シグナル点数30以上</small><b class="${sign(strong.excess)}">${pctf(strong.excess, 2)}</b><small>${strong.n.toLocaleString()}回・勝率${Math.round(strong.win * 100)}%</small></div>` : ''}
+      ${days === 5 && strong?.n ? `<div><small>参考：シグナル点数30以上</small><b class="${sign(strong.excess)}">${pctf(strong.excess, 2)}</b><small>${strong.n.toLocaleString()}回・勝率${Math.round(strong.win * 100)}%</small></div>` : ''}
     </div>
     <h3>予測の強さ別（10段階）の実際の成績</h3>
     ${r.deciles.slice().reverse().map((d) => `<div class="decile"><span>${d.decile === 10 ? '最上位' : d.decile === 1 ? '最下位' : `第${d.decile}段階`}</span>
       <div class="bar"><i class="${d.excess >= 0 ? 'pos' : 'neg'}" style="width:${(Math.abs(d.excess) / maxAbs) * 50}%"></i></div>
       <span class="mono ${sign(d.excess)}">${pctf(d.excess, 2)}</span></div>`).join('')}
     <p class="muted small">上の段階ほど成績が良く、下ほど悪ければ、モデルが銘柄の良し悪しを見分けられています。</p>
-    ${m.model?.importance ? `<h3>予測でよく使われている情報</h3><div class="imp">${m.model.importance.slice(0, 10).map(([k, v]) => `<span>${esc(FEATURE_JA[k] || k)} ${Math.round(v * 100)}%</span>`).join('')}</div>` : ''}
-    <h3>シグナル点数方式の成績</h3>`;
+    ${m.model?.importance ? `<h3>予測でよく使われている情報</h3><div class="imp">${m.model.importance.slice(0, 10).map(([k, v]) => `<span>${esc(FEATURE_JA[k] || k)} ${Math.round(v * 100)}%</span>`).join('')}</div>` : ''}`;
 }
 
 function renderBacktest() {
@@ -932,7 +1041,8 @@ function renderBacktest() {
   const exc = (st) => (st?.excess != null ? `<b class="${sign(st.excess)}">${pctf(st.excess, 2)}</b>` : '<b>—</b>');
   const kpi = (label, st) => `<div><small>${label}</small>${exc(st)}<small>${st?.n ? `${st.n.toLocaleString()}回・勝率${Math.round(st.win * 100)}%・平均${pctf(st.avg, 2)}` : 'なし'}</small></div>`;
   const cell = (st) => (st?.n ? `<td class="num mono">${st.n.toLocaleString()}</td><td class="num mono">${Math.round(st.win * 100)}%</td><td class="num mono ${sign(st.excess ?? st.avg)}">${pctf(st.excess ?? st.avg, 2)}</td>` : '<td class="num muted">0</td><td></td><td></td>');
-  $('#bt-body').innerHTML = `${aiModelSection()}
+  $('#bt-body').innerHTML = `${aiModelSection()}${aiModelSection(state.server.model20, 20)}
+    <h3>シグナル点数方式の成績</h3>
     <p class="muted small">対象: ${src}。シグナルが出た日の終値で買い、5営業日後の終値と比べています。大きな数字は<b>市場平均との差</b>（同じ日の全銘柄の平均を引いた値）で、銘柄選びの腕前を表します。</p>
     <div class="kpis">
       ${kpi('「強い買い」の日（市場平均との差）', bt.byVerdict.strong)}
@@ -1110,6 +1220,35 @@ document.addEventListener('click', (e) => {
   render();
 });
 $('#d-ai-btn').addEventListener('click', askAi);
+$('#memo-save').addEventListener('click', () => {
+  const s = state.selected, text = $('#memo-text').value.trim();
+  if (!s || !text) return;
+  const r = rowOf(s);
+  const price = state.quotes[s]?.price ?? state.candles[s]?.at(-1)?.close ?? r?.price ?? null;
+  const memos = state.settings.memos || (state.settings.memos = {});
+  (memos[s] = memos[s] || []).push({ id: Date.now().toString(36), ts: Date.now(), date: todayJst(), text, price, p5: r?.pred ?? null, p20: r?.pred20 ?? null });
+  save();
+  $('#memo-text').value = '';
+  renderMemos(s);
+  toast('メモを保存しました');
+});
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-del-memo]');
+  if (!b || !state.selected) return;
+  const ms = state.settings.memos?.[state.selected] || [];
+  state.settings.memos[state.selected] = ms.filter((m) => m.id !== b.dataset.delMemo);
+  if (!state.settings.memos[state.selected].length) delete state.settings.memos[state.selected];
+  save();
+  renderMemos(state.selected);
+});
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-h]');
+  if (!b) return;
+  state.settings.horizon = Number(b.dataset.h);
+  save();
+  recomputeAll();
+  render();
+});
 $('#d-ai-chat').addEventListener('click', askInClaudeApp);
 $('#al-save').addEventListener('click', () => {
   const s = state.selected;

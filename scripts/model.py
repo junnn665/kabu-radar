@@ -205,7 +205,7 @@ def evaluate(df, cols, label="ex", quiet=False):
     preds = []
     for s in range(test_start, n_days - H, TEST_BLOCK):
         test_dates = dates[s:min(s + TEST_BLOCK, n_days - H)]
-        train_end = dates[s - H - 1]  # 正解（5日後）が分かっている日まで
+        train_end = dates[s - H - 1]  # 正解（H日後）が分かっている日まで
         train_start = dates[max(0, s - H - 1 - TRAIN_WINDOW)]
         tr = usable[(usable["date"] >= train_start) & (usable["date"] <= train_end)]
         te = usable[usable["date"].isin(test_dates)]
@@ -255,15 +255,20 @@ def main():
     ap.add_argument("--train", action="store_true", help="学習（と検証）も行う。指定しなければ保存済みモデルで予測だけ")
     ap.add_argument("--no-eval", action="store_true")
     ap.add_argument("--experiment", action="store_true", help="複数の設計を同じ期間で比較して結果を出力")
+    ap.add_argument("--horizon", type=int, default=5, help="何営業日後を予測するか（5＝1週間、20＝1か月）")
+    ap.add_argument("--tag", default="", help="出力ファイル名に付ける印（例: 20 → predictions_20.json）")
     args = ap.parse_args()
+    global H
+    H = args.horizon
+    suf = f"_{args.tag}" if args.tag else ""
     t0 = time.time()
     import lightgbm as lgb
 
     history = load(args.history, {})
     universe = load(args.universe, {}).get("symbols", [])
     market = load(args.market, {})
-    model_path = os.path.join(args.cache, "model.txt")
-    meta_path = os.path.join(args.cache, "model_meta.json")
+    model_path = os.path.join(args.cache, f"model{suf}.txt")
+    meta_path = os.path.join(args.cache, f"model_meta{suf}.json")
     predict_only = not args.train and not args.experiment and os.path.exists(model_path) \
         and load(meta_path, {}).get("variant", "A_all") == DEFAULT_VARIANT
     full_history = history
@@ -279,13 +284,13 @@ def main():
             res[name] = {k: r[k] for k in ("ic", "icPositiveDays", "top2pct", "bottom2pct", "sectorConcentration", "positiveMonths")} | {"top20": r["top"][1]}
             print(f"EXP {name}: IC {r['ic']:.3f} top2% {r['top2pct']['excess'] * 100:+.2f}% win {r['top2pct']['win'] * 100:.0f}% "
                   f"top20 {r['top'][1]['excess'] * 100:+.2f}% 偏り {r['sectorConcentration'] * 100:.0f}% 月勝率 {r['positiveMonths'] * 100:.0f}% ({time.time() - t1:.0f}s)", flush=True)
-        dump(res, os.path.join(args.out, "experiments.json"))
+        dump(res, os.path.join(args.out, f"experiments{suf}.json"))
     variant = VARIANTS[DEFAULT_VARIANT]
     label = label_col(variant)
     cols = feature_cols(df, variant)
     print(f"特徴量 {len(cols)}項目 / {df['sym'].nunique():,}銘柄 / {df['date'].nunique()}営業日 / {len(df):,}行 ({time.time() - t0:.0f}s)", flush=True)
 
-    report = load(os.path.join(args.cache, "model_report.json"), None)
+    report = load(os.path.join(args.cache, f"model_report{suf}.json"), None)
     model = None
     if not args.train and os.path.exists(model_path):
         meta = load(meta_path, {})
@@ -311,10 +316,10 @@ def main():
         model.save_model(model_path)
         imp = sorted(zip(cols, model.feature_importance("gain")), key=lambda x: -x[1])
         total = sum(v for _, v in imp) or 1
-        dump({"variant": DEFAULT_VARIANT, "features": cols, "trainedAt": dt.datetime.now(JST).isoformat(), "trainEnd": str(usable["date"].max()),
+        dump({"variant": DEFAULT_VARIANT, "horizon": H, "features": cols, "trainedAt": dt.datetime.now(JST).isoformat(), "trainEnd": str(usable["date"].max()),
               "rows": int(len(usable)), "importance": [[k, round(float(v) / total, 4)] for k, v in imp[:15]]}, meta_path)
         if report:
-            dump(report, os.path.join(args.cache, "model_report.json"))
+            dump(report, os.path.join(args.cache, f"model_report{suf}.json"))
 
     # 最新日の予測（全銘柄）。順位は売買代金1億円以上の銘柄の中での位置
     last = df.sort_values("date").groupby("sym", observed=True).tail(1)
@@ -340,9 +345,9 @@ def main():
         meta_reason = {"base": round(base, 3), "sectors": sectors, "segs": ["P", "S", "G", "X"]}
     else:
         meta_reason = {}
-    dump({"date": str(df["date"].max()), "reasons": reasons, **meta_reason}, os.path.join(args.out, "ai_reasons.json"))
+    dump({"date": str(df["date"].max()), "reasons": reasons, **meta_reason}, os.path.join(args.out, f"ai_reasons{suf}.json"))
     meta = load(meta_path, {})
-    dump({"date": str(df["date"].max()), "model": meta, "report": report, "preds": out}, os.path.join(args.out, "predictions.json"))
+    dump({"date": str(df["date"].max()), "horizon": H, "model": meta, "report": report, "preds": out}, os.path.join(args.out, f"predictions{suf}.json"))
     print(f"予測 {len(out):,}銘柄（{time.time() - t0:.0f}s）", json.dumps({k: report[k] for k in ("ic", "top2pct")} if report else {}, ensure_ascii=False))
 
 

@@ -78,6 +78,10 @@ async function main() {
   const MODE = args.mode || (fetchMeta?.history?.mode === 'intraday' ? 'intraday' : 'daily');
   const predDoc = readJson(path.join(RAW, 'predictions.json'), null);
   const preds = predDoc?.preds || {};
+  // 1か月（20営業日）先の予測。日中は約15分おきにしか作らないので、無い回は前回の値を使う
+  const pred20Doc = readJson(path.join(RAW, 'predictions_20.json'), null);
+  const prevRows = readJson(path.join(PREV, 'screener.json'), { rows: [] }).rows || [];
+  const preds20 = pred20Doc?.preds || Object.fromEntries(prevRows.filter((r) => r.pred20 != null).map((r) => [r.sym, [r.pred20, r.aiRank20]]));
   const funda = fundaDoc.fundamentals || {};
   const events = eventsDoc.events || {};
   const news = newsDoc.news || {};
@@ -146,6 +150,8 @@ async function main() {
   }
   // AI予測モデルの検証結果（学習は朝だけ。日中は同じモデルで予測し直す）
   writeJson(path.join(OUT, 'model.json'), predDoc ? { date: predDoc.date, model: predDoc.model, report: predDoc.report } : null);
+  writeJson(path.join(OUT, 'model20.json'), pred20Doc ? { date: pred20Doc.date, horizon: 20, model: pred20Doc.model, report: pred20Doc.report } : readJson(path.join(PREV, 'model20.json'), null));
+  writeJson(path.join(OUT, 'dividends.json'), readJson(path.join(RAW, 'dividends.json'), null) || readJson(path.join(PREV, 'dividends.json'), {}));
   // AI予測の判断理由（銘柄ごとの要因）と、本番の答え合わせ
   const reasonsDoc = readJson(path.join(RAW, 'ai_reasons.json'), null);
   if (reasonsDoc) writeJson(path.join(OUT, 'ai_reasons.json'), reasonsDoc);
@@ -172,7 +178,8 @@ async function main() {
       events: ev.earnings || ev.exDiv ? { earnings: ev.earnings || null, exDiv: ev.exDiv || null, exDivEstimated: !!ev.exDivEstimated } : null,
       per: f.per != null ? r2(f.per) : null, pbr: f.pbr != null ? r2(f.pbr) : null, divYield: f.divYield != null ? Math.round(f.divYield * 10000) / 10000 : null,
       stop: lv ? r2(lv.stop) : null, target: lv ? r2(lv.target) : null,
-      pred: preds[s]?.[0] ?? null, aiRank: preds[s]?.[1] ?? null, // AI予測：5日後の市場平均との差（%）と、売買代金のある銘柄の中での順位（1=最上位）
+      pred: preds[s]?.[0] ?? null, aiRank: preds[s]?.[1] ?? null,
+      pred20: preds20[s]?.[0] ?? null, aiRank20: preds20[s]?.[1] ?? null, // AI予測：5日後の市場平均との差（%）と、売買代金のある銘柄の中での順位（1=最上位）
     };
   }).sort((x, y) => y.score - x.score || (y.turnover || 0) - (x.turnover || 0));
   writeJson(path.join(OUT, 'screener.json'), { updatedAt: now.toISOString(), rows });

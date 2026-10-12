@@ -388,6 +388,9 @@ def main():
     last_all = now_ts if tier in ("full", "all") else cache.get("last_all_ts", 0)
     save_json(os.path.join(args.cache, "history.json.gz"), {"full_date": full_date, "last_all_ts": last_all, "bars": bars, "divs": divs}, gz=True)
     save_json(os.path.join(args.out, "history.json"), bars)
+    # 配当履歴（直近約2年）：保有株の配当金見込み・配当カレンダー用
+    since = (today - dt.timedelta(days=800)).isoformat()
+    save_json(os.path.join(args.out, "dividends.json"), {s: [[d, round(a, 3)] for d, a in v if d >= since] for s, v in divs.items() if s in bars and v})
     DIAG["history"] = {"mode": "full" if full else "intraday", "tier": tier, "symbols": len(bars), "fetched": len(got), "universe": len(symbols)}
 
     # 指数
