@@ -8,6 +8,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { analyze, scoreOf, verdictOf, SIGNAL_MAP, BASE_WEIGHTS } from '../js/signals.js';
 import { signalStats, tuneWeights, simulate, tradeSummary, DEFAULT_RULES } from '../js/backtest.js';
+import { makeRegime } from '../js/market.js';
+import { computeReview } from '../js/review.js';
+import { levels } from '../js/levels.js';
 import { explain, explainGithub, AI_MODEL_DEFAULT, GH_MODEL_DEFAULT } from '../js/ai.js';
 
 const args = Object.fromEntries(
@@ -57,6 +60,9 @@ async function main() {
   const history = readJson(path.join(RAW, 'history.json'), {});
   const eventsDoc = readJson(path.join(RAW, 'events.json'), { events: {} });
   const newsDoc = readJson(path.join(RAW, 'news.json'), { news: {} });
+  const market = readJson(path.join(RAW, 'market.json'), {});
+  const fundaDoc = readJson(path.join(RAW, 'fundamentals.json'), { fundamentals: {} });
+  const funda = fundaDoc.fundamentals || {};
   const prevScreener = readJson(path.join(PREV, 'screener.json'), { rows: [] });
   const prevAi = readJson(path.join(PREV, 'ai.json'), {});
   const prevNotified = readJson(path.join(PREV, 'notified.json'), {});
@@ -77,18 +83,33 @@ async function main() {
   }
   writeJson(path.join(OUT, 'quotes.json'), { updatedAt: now.toISOString(), quotes });
 
+  // 地合い（市場全体）。指数が取れなかった場合は割り引きなし
+  const regimeAt = makeRegime(market);
+  const penaltyOf = (s, date) => regimeAt(meta[s].market, date).penalty;
+  const lastDate = (mkt) => {
+    const k = mkt === 'JP' ? 'N225' : 'SPX';
+    return market[k]?.at(-1)?.date || syms.map((s) => history[s].at(-1).date).sort().at(-1);
+  };
+  const regimeNow = { JP: regimeAt('JP', lastDate('JP')), US: regimeAt('US', lastDate('US')) };
+  const indices = Object.fromEntries(Object.entries(market).map(([k, cs]) => {
+    const l = cs.at(-1), p = cs.at(-2) || l;
+    return [k, { price: l.close, changePct: (l.close / p.close - 1) * 100, date: l.date, spark: cs.slice(-30).map((c) => c.close) }];
+  }));
+  writeJson(path.join(OUT, 'market.json'), { updatedAt: now.toISOString(), indices, regime: regimeNow });
+  writeJson(path.join(OUT, 'fundamentals.json'), fundaDoc);
+
   // 2) バックテスト・自動チューニング
   const series = Object.fromEntries(syms.map((s) => [s, history[s]]));
-  const bt = signalStats(series, { horizon: 5 });
+  const bt = signalStats(series, { horizon: 5, penaltyOf });
   const tuned = tuneWeights(bt);
   const strategy = {};
   const recentTrades = [];
-  for (const [mode, w] of [['base', BASE_WEIGHTS], ['tuned', tuned]]) {
+  for (const [mode, w, filt] of [['base', BASE_WEIGHTS, false], ['filtered', BASE_WEIGHTS, true], ['tuned', tuned, false]]) {
     const all = [];
     for (const s of syms) {
-      const tr = simulate(history[s], w, DEFAULT_RULES).map((t) => ({ ...t, sym: s, name: meta[s].name }));
+      const tr = simulate(history[s], w, DEFAULT_RULES, filt ? (d) => penaltyOf(s, d) : null).map((t) => ({ ...t, sym: s, name: meta[s].name }));
       all.push(...tr);
-      if (mode === 'base') recentTrades.push(...tr);
+      if (mode === 'filtered') recentTrades.push(...tr);
     }
     strategy[mode] = tradeSummary(all, NOTIONAL);
   }
@@ -101,20 +122,30 @@ async function main() {
   // 3) スクリーナー
   const events = eventsDoc.events || {};
   const news = newsDoc.news || {};
+  // score は地合いで割り引いた後の点数（サジェスト・ペーパートレード・通知はこれを使う）
   const rows = syms.map((s) => {
     const a = analyze(history[s]);
     const ids = a.signals.map((x) => x.id);
+    const pen = regimeNow[meta[s].market].penalty;
+    const lv = levels(history[s]);
+    const f = funda[s] || {};
     return {
       sym: s, name: meta[s].name, market: meta[s].market,
       price: quotes[s].price, changePct: quotes[s].changePct,
-      score: a.score, tunedScore: scoreOf(ids, tuned), ids,
+      rawScore: a.score, penalty: pen, score: Math.max(-100, a.score - pen), tunedScore: scoreOf(ids, tuned), ids,
       details: Object.fromEntries(a.signals.map((x) => [x.id, x.detail])),
       events: events[s] || null,
+      per: f.per ?? null, pbr: f.pbr ?? null, divYield: f.divYield ?? null, sector: f.sector ?? null,
+      stop: lv?.stop ?? null, target: lv?.target ?? null,
     };
   }).sort((x, y) => y.score - x.score);
   writeJson(path.join(OUT, 'screener.json'), { updatedAt: now.toISOString(), rows });
   writeJson(path.join(OUT, 'events.json'), eventsDoc);
   writeJson(path.join(OUT, 'news.json'), newsDoc);
+
+  // 答え合わせ（直近40営業日に「強い買い」だった銘柄のその後）
+  const review = computeReview(series, { meta, index: { JP: market.N225, US: market.SPX }, penaltyOf, days: 40 });
+  writeJson(path.join(OUT, 'review.json'), { updatedAt: now.toISOString(), ...review });
 
   // 4) ペーパートレード（実運用ログ。サジェスト通り＝標準配点で機械的に売買）
   const paper = readJson(path.join(PREV, 'paper.json'), null) || {

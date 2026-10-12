@@ -4,6 +4,11 @@ import { signalStats, tuneWeights, simulate, tradeSummary, DEFAULT_RULES } from 
 import { explain, chatPrompt, AI_MODELS, AI_MODEL_DEFAULT } from './ai.js';
 import { ruleExplain } from './explain.js';
 import { drawChart, sparkline, fmt } from './chart.js';
+import { levels, holdingLevels } from './levels.js';
+import { marketOf } from './market.js';
+import { computeReview } from './review.js';
+
+const DEFAULT_REPO = 'junnn665/kabu-radar';
 
 // ================= 設定 =================
 const DEFAULTS = {
@@ -19,6 +24,8 @@ const DEFAULTS = {
   aiKey: '',
   aiModel: AI_MODEL_DEFAULT,
   tab: 'watch',
+  holdings: [],       // [{ id, sym, shares, cost, date }]
+  marketFilter: true, // 地合いフィルター
 };
 const store = {
   load() {
@@ -43,7 +50,8 @@ const state = {
   local: {},         // デモ等でブラウザ内計算したもの
   symStats: {},      // 銘柄別バックテストのキャッシュ
   aiBusy: false,
-  scr: { market: 'all', min: 20, q: '' },
+  scr: { market: 'all', min: 20, q: '', funda: 'all' },
+  universe: null,    // 自動取得の対象銘柄（config/universe.json）
 };
 
 const $ = (s) => document.querySelector(s);
@@ -67,14 +75,31 @@ function rawWeights() {
 const W = () => applyStyle(rawWeights(), state.settings.style);
 const universeStats = () => state.server.backtest || state.local.bt || null;
 
+// ================= 地合い =================
+const regimeOf = (mkt) => state.server.market?.regime?.[mkt] || null;
+const penaltyFor = (s) => (state.settings.marketFilter ? regimeOf(marketOf(s))?.penalty || 0 : 0);
+function withRegime(a, s) {
+  const pen = penaltyFor(s);
+  if (!pen || !a) return a;
+  const score = Math.max(-100, a.score - pen);
+  return { ...a, rawScore: a.score, penalty: pen, score, verdict: verdictOf(score) };
+}
+
 // ================= データ =================
+const tracked = () => [...new Set([...state.settings.watchlist, ...state.settings.holdings.map((h) => h.sym)])];
+const inUniverse = (s) => !state.universe || state.universe.has(s);
+const fundaOf = (s) => state.server.fundamentals?.fundamentals?.[s] || null;
 const eventsOf = (s) => state.server.events?.events?.[s] || null;
 const newsOf = (s) => state.server.news?.news?.[s] || [];
 const nameOf = (s) => state.quotes[s]?.name || state.server.screener?.rows?.find((r) => r.sym === s)?.name || s;
 
 async function loadServer() {
   if (!state.provider.static) { state.server = {}; return; }
-  const files = ['screener', 'backtest', 'paper', 'events', 'news', 'ai', 'meta'];
+  const files = ['screener', 'backtest', 'paper', 'events', 'news', 'ai', 'meta', 'market', 'fundamentals', 'review'];
+  try {
+    const u = await (await fetch('config/universe.json', { cache: 'no-store' })).json();
+    state.universe = new Set(u.symbols.map((x) => x.sym));
+  } catch { state.universe = null; }
   const docs = await Promise.all(files.map((f) => state.provider.json(`${f}.json`, { fresh: true }).catch(() => null)));
   state.server = Object.fromEntries(files.map((f, i) => [f, docs[i]]));
 }
@@ -117,7 +142,9 @@ async function buildLocal() {
     if (mode === 'base') trades.push(...all);
   }
   trades.sort((a, b) => (b.entryDate > a.entryDate ? 1 : -1));
-  state.local = { bt, rows, strategy, trades, tuned: tuneWeights(bt) };
+  const meta = Object.fromEntries(syms.map((s) => [s, { name: nameOf(s), market: marketOf(s) }]));
+  const review = computeReview(series, { meta, days: 40 });
+  state.local = { bt, rows, strategy, trades, tuned: tuneWeights(bt), review };
 }
 
 function mergeQuote(s, q) {
@@ -135,7 +162,7 @@ function mergeQuote(s, q) {
 }
 
 function recompute(s) {
-  const a = analyze(state.candles[s], W());
+  const a = withRegime(analyze(state.candles[s], W()), s);
   state.analyses[s] = a;
   const prev = state.prevVerdict[s];
   if (prev && prev !== 'strong' && a.verdict.key === 'strong') {
@@ -148,7 +175,7 @@ const recomputeAll = () => Object.keys(state.candles).forEach(recompute);
 async function tick() {
   if (state.busy) return;
   state.busy = true;
-  const syms = [...new Set([...state.settings.watchlist, state.selected].filter(Boolean))].filter((s) => state.candles[s]?.length);
+  const syms = [...new Set([...tracked(), state.selected].filter(Boolean))].filter((s) => state.candles[s]?.length);
   try {
     const before = state.provider.quotesDoc?.updatedAt;
     const qs = await state.provider.getQuotes(syms);
@@ -161,7 +188,8 @@ async function tick() {
       recompute(s);
       checkAlerts(s, q, old);
     }
-    if (state.provider.static && state.provider.quotesDoc?.updatedAt !== before) await loadServer();
+    if (state.provider.static && state.provider.quotesDoc?.updatedAt !== before) { await loadServer(); recomputeAll(); }
+    checkHoldings();
     if (refetch.length) loadCandles(refetch);
     const at = state.provider.quotesDoc?.updatedAt ? new Date(state.provider.quotesDoc.updatedAt) : new Date();
     $('#updated').textContent = at.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
@@ -183,7 +211,7 @@ async function restart() {
   document.documentElement.dataset.up = state.settings.upColor;
   render();
   await loadServer();
-  await loadCandles(state.settings.watchlist);
+  await loadCandles(tracked());
   await tick();
   await buildLocal();
   recomputeAll();
@@ -252,10 +280,43 @@ function render() {
   const mode = state.settings.weightMode === 'base' ? '' : state.settings.weightMode === 'tuned' ? '自動調整' : 'カスタム';
   const style = state.settings.style !== 'balanced' ? STYLES[state.settings.style].label.replace(/（.*/, '') : '';
   $('#wmode').textContent = [mode, style].filter(Boolean).join('・');
-  ({ watch: renderWatch, screener: renderScreener, paper: renderPaper, backtest: renderBacktest })[state.settings.tab]();
+  ({ watch: renderWatch, screener: renderScreener, holdings: renderHoldings, paper: renderPaper, review: renderReview, backtest: renderBacktest })[state.settings.tab]();
+}
+
+function renderRegime() {
+  const m = state.server.market;
+  if (!m) { $('#regime').innerHTML = ''; return; }
+  const idx = m.indices || {};
+  const chip = (k, label) => idx[k] ? `<span class="idx"><small>${label}</small><b class="mono">${fmt(idx[k].price)}</b><i class="${sign(idx[k].changePct)} mono">${pct(idx[k].changePct)}</i></span>` : '';
+  const reg = (mkt, label) => {
+    const r = m.regime?.[mkt];
+    if (!r) return '';
+    return `<div class="reg ${r.state.key}"><b>${label}：${r.state.label}</b>${r.penalty ? `<span>買いシグナルを −${r.penalty}点</span>` : ''}${r.notes.length ? `<small>${r.notes.map(esc).join('・')}</small>` : ''}</div>`;
+  };
+  $('#regime').innerHTML = `<div class="idxs">${chip('N225', '日経平均')}${chip('SPX', 'S&P500')}${chip('VIX', 'VIX')}${chip('USDJPY', 'ドル円')}</div>
+    <div class="regs">${reg('JP', '日本株の地合い')}${reg('US', '米国株の地合い')}</div>
+    ${state.settings.marketFilter ? '' : '<small class="muted">地合いフィルターはオフです（設定で変更）</small>'}`;
+}
+
+function levelLine(s, compact = false) {
+  const lv = levels(state.candles[s]);
+  if (!lv) return '';
+  return `<div class="lv ${compact ? 'compact' : ''}"><span>損切り <b class="mono">${fmt(lv.stop)}</b><i class="down">${pctf(lv.stopPct)}</i></span><span>利確 <b class="mono">${fmt(lv.target)}</b><i class="up">${pctf(lv.targetPct)}</i></span></div>`;
+}
+
+function fundaLine(s) {
+  const f = fundaOf(s);
+  if (!f) return '';
+  const items = [
+    f.per != null && `PER <b class="mono">${f.per.toFixed(1)}</b>倍`,
+    f.pbr != null && `PBR <b class="mono">${f.pbr.toFixed(2)}</b>倍`,
+    f.divYield != null && `配当利回り <b class="mono">${(f.divYield * 100).toFixed(2)}</b>%`,
+  ].filter(Boolean);
+  return items.length ? `<div class="funda">${items.join('<span class="sep">｜</span>')}</div>` : '';
 }
 
 function renderWatch() {
+  renderRegime();
   renderPicks();
   renderTable();
   renderDetail();
@@ -276,6 +337,7 @@ function renderPicks() {
           <div class="pick-name">${esc(nameOf(s))}</div>
           <div class="pick-price mono">${fmt(q?.price)} <span class="${sign(q?.changePct)}">${pct(q?.changePct)}</span></div>
           <div class="evs">${eventChips(s)}</div>
+          ${levelLine(s, true)}
           <div class="pick-score"><span class="mono">${a.score}</span><small>/100</small></div>
           <ul>${a.signals.filter((x) => x.weight > 0).slice(0, 3).map((x) => `<li>${esc(x.label)}</li>`).join('')}</ul>
         </button>`;
@@ -332,7 +394,10 @@ function renderDetail() {
     ? a.signals.map((x) => `<li class="${x.weight > 0 ? 'pos' : 'neg'}"><b class="mono">${x.weight > 0 ? '+' : ''}${x.weight}</b><div><strong>${esc(x.label)}</strong><small>${esc(x.detail)}</small>
         <small class="bt">${[statLine(ss?.stats[x.id], 'この銘柄:'), statLine(us?.stats[x.id], '全銘柄:')].filter(Boolean).join(' ／ ') || '過去データ不足'}</small></div></li>`).join('')
     : '<li class="muted">目立ったシグナルはありません</li>';
-  $('#d-score').innerHTML = a ? `総合スコア <b class="mono">${a.score}</b> ・ <span class="badge ${a.verdict.key}">${a.verdict.label}</span>` : '';
+  $('#d-score').innerHTML = a ? `総合スコア <b class="mono">${a.score}</b> ・ <span class="badge ${a.verdict.key}">${a.verdict.label}</span>`
+    + (a.penalty ? `<small class="muted pen">地合いで −${a.penalty}点（元 ${a.rawScore}点）</small>` : '') : '';
+  $('#d-levels').innerHTML = levelLine(s) + fundaLine(s)
+    + (levels(state.candles[s]) ? `<small class="muted">損切りは普段の値幅(ATR)の2倍下、利確は3倍上の目安です。</small>` : '');
 
   // 「なぜ今？」解説：自分のキーで生成 ＞ Actions で自動生成（無料AI/Claude） ＞ ルールによる自動まとめ
   const cached = store.get(`kr:ai:${s}:${todayJst()}`);
@@ -357,6 +422,9 @@ function renderDetail() {
     ? ns.map((n) => `<li><a href="${esc(n.link || '#')}" target="_blank" rel="noopener">${esc(n.title)}</a><small>${esc(n.publisher || '')}${n.time ? ' ・ ' + esc(new Date(n.time).toLocaleDateString('ja-JP')) : ''}</small></li>`).join('')
     : '<li class="muted">ニュースはありません（自動取得データのモードで表示されます）</li>';
 
+  const uniBtn = $('#d-universe');
+  uniBtn.hidden = !state.provider?.static || !state.universe;
+  uniBtn.textContent = inUniverse(s) ? '自動取得の対象から外す' : '自動取得の対象に追加をリクエスト';
   const inList = state.settings.watchlist.includes(s);
   $('#d-remove').textContent = inList ? 'ウォッチリストから外す' : '＋ウォッチリストに追加';
   $('#d-remove').classList.toggle('danger', inList);
@@ -406,8 +474,10 @@ function screenerRows() {
   const rows = state.server.screener?.rows || state.local.rows || [];
   const w = W();
   return rows.map((r) => {
-    const score = scoreOf(r.ids, w);
-    return { ...r, score, verdict: verdictOf(score) };
+    const pen = penaltyFor(r.sym);
+    const score = Math.max(-100, scoreOf(r.ids, w) - pen);
+    const f = fundaOf(r.sym) || r;
+    return { ...r, score, penalty: pen, verdict: verdictOf(score), per: f.per ?? null, pbr: f.pbr ?? null, divYield: f.divYield ?? null };
   });
 }
 
@@ -420,6 +490,7 @@ function renderScreener() {
     .filter((r) => f.market === 'all' || r.market === f.market)
     .filter((r) => r.score >= f.min)
     .filter((r) => !q || r.sym.toLowerCase().includes(q) || r.name.toLowerCase().includes(q))
+    .filter((r) => FUNDA_FILTERS[f.funda].test(r))
     .sort((a, b) => b.score - a.score);
   $('#scr-rows').innerHTML = rows.length
     ? rows.map((r) => {
@@ -428,12 +499,22 @@ function renderScreener() {
           <td><div class="sym">${esc(r.sym)} <span class="mk">${r.market}</span></div><div class="nm">${esc(r.name)}</div><div class="evs">${eventChips(r.sym)}</div></td>
           <td class="mono num">${fmt(r.price)}<div class="${sign(r.changePct)} small">${pct(r.changePct)}</div></td>
           <td>${meter(r.score)}<div><span class="badge ${r.verdict.key}">${r.verdict.label}</span></div></td>
+          <td class="small fnd"><div>PER ${r.per != null ? r.per.toFixed(1) : '—'}</div><div>PBR ${r.pbr != null ? r.pbr.toFixed(2) : '—'}</div><div>利回り ${r.divYield != null ? (r.divYield * 100).toFixed(1) + '%' : '—'}</div></td>
           <td class="hide-sm small">${r.ids.map((id) => esc(SIGNAL_MAP[id].label)).join('、') || '—'}</td>
           <td><button class="mini ${inList ? 'ghost' : ''}" data-add="${esc(r.sym)}">${inList ? '✓' : '＋'}<span class="hide-sm">${inList ? '登録済' : '監視'}</span></button></td>
         </tr>`;
       }).join('')
-    : '<tr><td colspan="5" class="muted">条件に合う銘柄はありません。スコアの下限を下げてみてください。</td></tr>';
+    : '<tr><td colspan="6" class="muted">条件に合う銘柄はありません。スコアの下限や条件をゆるめてみてください。</td></tr>';
 }
+
+const FUNDA_FILTERS = {
+  all: { label: '財務条件なし', test: () => true },
+  div: { label: '高配当（利回り3%以上）', test: (r) => r.divYield >= 0.03 },
+  pbr: { label: '割安（PBR1倍未満）', test: (r) => r.pbr != null && r.pbr < 1 },
+  per: { label: '割安（PER15倍未満）', test: (r) => r.per != null && r.per < 15 },
+  divdip: { label: '高配当×売られすぎ', test: (r) => r.divYield >= 0.03 && r.ids.some((id) => ['rsi_oversold', 'rsi_low', 'bb_lower'].includes(id)) },
+  value: { label: '割安×上昇トレンド', test: (r) => ((r.pbr != null && r.pbr < 1.2) || (r.per != null && r.per < 15)) && r.ids.includes('uptrend') },
+};
 
 // ---------- ペーパートレード ----------
 function renderPaper() {
@@ -458,7 +539,7 @@ function renderPaper() {
     $('#paper-live').innerHTML = `<p class="empty">GitHub Actions がデータを生成すると、ここに実運用ログが自動で記録されます（スコア${DEFAULT_RULES.entry}以上で1回¥${(100000).toLocaleString()}分を仮想購入）。</p>`;
   }
   const bt = state.server.backtest || state.local;
-  const st = bt?.strategy?.base;
+  const st = bt?.strategy?.filtered || bt?.strategy?.base;
   $('#paper-sim').innerHTML = st
     ? `<div class="kpis">
         <div><small>取引回数</small><b>${st.trades}</b></div>
@@ -482,6 +563,91 @@ function tradeTable(list, open) {
     </tr>`).join('')}</tbody></table></div>`;
 }
 
+// ---------- 保有株 ----------
+const fxRate = () => state.server.market?.indices?.USDJPY?.price || null;
+const money = (v, cur) => (cur === 'USD' ? `$${fmt(v)}` : `¥${Math.round(v).toLocaleString('ja-JP')}`);
+
+function holdingView(h) {
+  const cs = state.candles[h.sym], q = state.quotes[h.sym], a = state.analyses[h.sym];
+  const price = q?.price ?? cs?.at(-1)?.close ?? null;
+  const cur = marketOf(h.sym) === 'JP' ? 'JPY' : 'USD';
+  const value = price != null ? price * h.shares : null;
+  const pnl = price != null ? (price - h.cost) * h.shares : null;
+  const lv = cs?.length ? holdingLevels(cs, h.cost) : null;
+  const warns = [];
+  if (a) {
+    if (a.score <= -30) warns.push({ hot: true, text: `売りシグナル（スコア${a.score}）` });
+    for (const x of a.signals) if (['dead_cross', 'macd_down', 'rsi_overbought', 'vol_surge_down'].includes(x.id)) warns.push({ text: x.label });
+  }
+  if (lv && price != null && price <= lv.stop) warns.push({ hot: true, text: `損切りライン ${fmt(lv.stop)} 割れ` });
+  if (lv && price != null && price >= lv.target) warns.push({ text: `利確目安 ${fmt(lv.target)} 到達` });
+  for (const b of eventBadges(h.sym)) if (b.days <= 7) warns.push({ hot: b.days <= 3, text: b.text });
+  return { ...h, price, cur, value, pnl, pnlPct: price != null ? price / h.cost - 1 : null, lv, a, warns };
+}
+
+function renderHoldings() {
+  const list = state.settings.holdings.map(holdingView);
+  const fx = fxRate();
+  const tot = { JPY: { v: 0, c: 0 }, USD: { v: 0, c: 0 } };
+  for (const h of list) if (h.value != null) { tot[h.cur].v += h.value; tot[h.cur].c += h.cost * h.shares; }
+  const jpyAll = tot.JPY.v + (fx ? tot.USD.v * fx : 0), jpyCost = tot.JPY.c + (fx ? tot.USD.c * fx : 0);
+  $('#hold-sum').innerHTML = list.length ? `<div class="kpis">
+      <div><small>評価額（円換算）</small><b>¥${Math.round(jpyAll).toLocaleString('ja-JP')}</b>${tot.USD.v && fx ? `<small>ドル円 ${fx.toFixed(2)} で換算</small>` : ''}</div>
+      <div><small>含み損益</small><b class="${sign(jpyAll - jpyCost)}">${yen(jpyAll - jpyCost)}</b><small>${pctf(jpyCost ? jpyAll / jpyCost - 1 : null)}</small></div>
+      <div><small>要注意</small><b class="${list.some((h) => h.warns.some((w) => w.hot)) ? 'down' : ''}">${list.filter((h) => h.warns.length).length}銘柄</b></div>
+    </div>` : '';
+  $('#hold-rows').innerHTML = list.length ? list.map((h) => `<tr data-sym="${esc(h.sym)}">
+      <td><div class="sym">${esc(h.sym)}</div><div class="nm">${esc(nameOf(h.sym))}</div><div class="nm show-sm mono">${h.shares.toLocaleString()}株 @${fmt(h.cost)}</div>${h.a ? `<span class="badge ${h.a.verdict.key}">${h.a.verdict.label}</span>` : ''}</td>
+      <td class="num small hide-sm"><div class="mono">${h.shares.toLocaleString()}株</div><div class="mono muted">@${fmt(h.cost)}</div></td>
+      <td class="num"><div class="mono">${fmt(h.price)}</div><div class="mono small">${h.value != null ? money(h.value, h.cur) : ''}</div></td>
+      <td class="num ${sign(h.pnl)}"><div class="mono">${h.pnl != null ? (h.pnl >= 0 ? '+' : '−') + money(Math.abs(h.pnl), h.cur) : '—'}</div><div class="mono small">${pctf(h.pnlPct)}</div></td>
+      <td class="hide-sm small">${h.lv ? `<div>損切り <b class="mono">${fmt(h.lv.stop)}</b></div><div>利確 <b class="mono">${fmt(h.lv.target)}</b></div>` : ''}</td>
+      <td class="small warns">${h.warns.length ? h.warns.map((w) => `<span class="ev ${w.hot ? 'hot' : ''}">${esc(w.text)}</span>`).join(' ') : '<span class="muted">—</span>'}
+        <div><button class="mini ghost" data-del-hold="${esc(h.id)}">削除</button></div></td>
+    </tr>`).join('')
+    : '<tr><td colspan="6" class="muted">まだ登録がありません。上のフォームから、持っている株のコード・株数・買値を入れてください。</td></tr>';
+}
+
+// 保有株の警告は1日1回だけ通知
+function checkHoldings() {
+  const day = todayJst();
+  const sent = store.get('kr:holdNotified') || {};
+  if (sent.day !== day) { sent.day = day; sent.keys = []; }
+  for (const h of state.settings.holdings.map(holdingView)) {
+    for (const w of h.warns.filter((x) => x.hot)) {
+      const key = `${h.sym}:${w.text}`;
+      if (sent.keys.includes(key)) continue;
+      sent.keys.push(key);
+      notify(`保有株: ${nameOf(h.sym)}`, w.text);
+    }
+  }
+  store.set('kr:holdNotified', sent);
+}
+
+// ---------- 答え合わせ ----------
+function renderReview() {
+  const rv = state.server.review || state.local.review;
+  if (!rv) { $('#review-body').innerHTML = '<p class="muted">計算中…</p>'; return; }
+  const box = (st, label) => `<div><small>${label}</small><b class="${sign(st.avg)}">${pctf(st.avg, 2)}</b><small>勝率${st.win != null ? Math.round(st.win * 100) + '%' : '—'}・指数に勝った${st.beat != null ? Math.round(st.beat * 100) + '%' : '—'}</small></div>`;
+  $('#review-body').innerHTML = `
+    <p class="muted small">各営業日に「強い買いシグナル」（${state.server.review ? '地合いフィルター込み・' : ''}${rv.threshold}点以上）だった銘柄を、その後${rv.horizon}営業日の値動きで採点しています。${state.server.review ? '比較対象は日本株＝日経平均、米国株＝S&P500。' : 'デモデータです。'}</p>
+    <div class="kpis">
+      <div><small>直近8週の件数</small><b>${rv.total.n}</b><small>結果確定 ${rv.total.done}件</small></div>
+      ${box(rv.total, '平均リターン（5日後）')}
+      <div><small>指数との差（平均）</small><b class="${sign(rv.total.avgExcess)}">${pctf(rv.total.avgExcess, 2)}</b></div>
+    </div>
+    ${rv.weeks.map((w) => `<details class="week" ${w === rv.weeks[0] ? 'open' : ''}>
+      <summary><b>${+w.week.slice(5, 7)}/${+w.week.slice(8, 10)}の週</b><span>${w.n}件</span>
+        <span class="${sign(w.avg)} mono">${w.done ? pctf(w.avg, 2) : '集計中'}</span>
+        <span class="muted">${w.win != null ? `勝率${Math.round(w.win * 100)}%` : ''}</span></summary>
+      <div class="table-wrap"><table><thead><tr><th>日付</th><th>銘柄</th><th class="num">点</th><th class="num">5日後</th><th class="num hide-sm">指数</th></tr></thead><tbody>
+      ${w.picks.map((p) => `<tr data-scr="${esc(p.sym)}"><td class="small mono">${p.date.slice(5)}</td><td><div class="sym">${esc(p.sym)}</div><div class="nm">${esc(p.name)}</div></td>
+        <td class="num mono">${p.score}</td>
+        <td class="num mono ${p.days ? sign(p.ret) : ''}">${p.days ? pctf(p.ret) : '—'}${p.done ? '' : `<div class="small muted">${p.days ? `${p.days}日目` : '結果待ち'}</div>`}</td>
+        <td class="num mono hide-sm ${sign(p.idxRet)}">${pctf(p.idxRet)}</td></tr>`).join('')}
+      </tbody></table></div></details>`).join('') || '<p class="muted">直近に「強い買い」はありませんでした。</p>'}`;
+}
+
 // ---------- バックテスト ----------
 function renderBacktest() {
   const bt = universeStats();
@@ -497,6 +663,10 @@ function renderBacktest() {
       <div><small>「強い買い」の日</small><b class="${sign(bt.byVerdict.strong.avg)}">${pctf(bt.byVerdict.strong.avg, 2)}</b><small>${bt.byVerdict.strong.n}回・勝率${bt.byVerdict.strong.n ? Math.round(bt.byVerdict.strong.win * 100) : '—'}%</small></div>
       <div><small>「注目」の日</small><b class="${sign(bt.byVerdict.watch.avg)}">${pctf(bt.byVerdict.watch.avg, 2)}</b><small>${bt.byVerdict.watch.n}回・勝率${bt.byVerdict.watch.n ? Math.round(bt.byVerdict.watch.win * 100) : '—'}%</small></div>
     </div>
+    ${bt.byRegime ? `<div class="kpis">
+      <div><small>地合い良好の日の「強い買い」</small><b class="${sign(bt.byRegime.good.avg)}">${pctf(bt.byRegime.good.avg, 2)}</b><small>${bt.byRegime.good.n}回・勝率${bt.byRegime.good.n ? Math.round(bt.byRegime.good.win * 100) : '—'}%</small></div>
+      <div><small>地合い悪化の日の「強い買い」</small><b class="${sign(bt.byRegime.bad.avg)}">${pctf(bt.byRegime.bad.avg, 2)}</b><small>${bt.byRegime.bad.n}回・勝率${bt.byRegime.bad.n ? Math.round(bt.byRegime.bad.win * 100) : '—'}%</small></div>
+    </div>` : ''}
     <div class="table-wrap"><table>
       <thead><tr><th>シグナル</th><th class="num">標準</th><th class="num">調整後</th><th class="num">回数</th><th class="num">勝率</th><th class="num">平均</th></tr></thead>
       <tbody>${SIGNALS.map((s) => `<tr><td>${esc(s.label)}</td><td class="num mono">${s.base}</td><td class="num mono ${tuned[s.id] !== s.base ? 'chg' : ''}">${tuned[s.id]}</td>${cell(bt.stats[s.id])}</tr>`).join('')}</tbody>
@@ -504,7 +674,7 @@ function renderBacktest() {
     <h3>売買ルールで回した場合（スコア${DEFAULT_RULES.entry}以上で買い／+10%利確・−5%損切り・最長10日）</h3>
     <div class="table-wrap"><table>
       <thead><tr><th>配点</th><th class="num">取引</th><th class="num">勝率</th><th class="num">平均</th><th class="num">合計損益</th></tr></thead>
-      <tbody>${[['標準配点', strat.base], ['自動調整した配点', strat.tuned]].map(([l, st]) => st ? `<tr><td>${l}</td><td class="num mono">${st.trades}</td><td class="num mono">${st.win != null ? Math.round(st.win * 100) + '%' : '—'}</td><td class="num mono ${sign(st.avg)}">${pctf(st.avg, 2)}</td><td class="num mono ${sign(st.pnl)}">${yen(st.pnl)}</td></tr>` : '').join('')}</tbody>
+      <tbody>${[['標準配点', strat.base], ['標準＋地合いフィルター', strat.filtered], ['自動調整した配点', strat.tuned]].map(([l, st]) => st ? `<tr><td>${l}</td><td class="num mono">${st.trades}</td><td class="num mono">${st.win != null ? Math.round(st.win * 100) + '%' : '—'}</td><td class="num mono ${sign(st.avg)}">${pctf(st.avg, 2)}</td><td class="num mono ${sign(st.pnl)}">${yen(st.pnl)}</td></tr>` : '').join('')}</tbody>
     </table></div>
     <p class="muted small">※ 調整後の配点は同じ期間のデータから作っているため、成績は実際より良く見えます（過剰適合）。将来の成績を保証するものではありません。</p>`;
 }
@@ -522,9 +692,27 @@ async function openSymbol(s) {
   if (!state.candles[s]) { await loadCandles([s]); await tick(); }
 }
 
+function repoName() {
+  const m = location.hostname.match(/^([^.]+)\.github\.io$/);
+  const repo = location.pathname.split('/').filter(Boolean)[0];
+  return m && repo ? `${m[1]}/${repo}` : DEFAULT_REPO;
+}
+
+// 自動取得の対象（config/universe.json）の追加・削除を GitHub の Issue で依頼する。数分で自動反映
+function requestUniverse(s, action = '追加') {
+  const title = `${action}: ${s}`;
+  const body = action === '追加'
+    ? '名前: \n\n（↑日本語名などを入れたい場合だけ記入。空欄なら Yahoo Finance の名前を使います）\n\nこの Issue は自動で処理されます。そのまま「Submit new issue」を押してください。'
+    : 'この Issue は自動で処理されます。そのまま「Submit new issue」を押してください。';
+  window.open(`https://github.com/${repoName()}/issues/new?title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`, '_blank', 'noopener');
+}
+
 function addSymbol(s) {
   s = s.trim().toUpperCase();
   if (!s) return;
+  if (state.provider?.static && state.universe && !inUniverse(s)) {
+    if (confirm(`${s} はまだ自動取得の対象外です。\nGitHub で追加をリクエストしますか？（送信すると数分でデータが届きます）`)) requestUniverse(s);
+  }
   if (!state.settings.watchlist.includes(s)) {
     state.settings.watchlist.push(s);
     store.save(state.settings);
@@ -565,6 +753,39 @@ $('#d-remove').addEventListener('click', () => {
   state.selected = null;
   render();
 });
+$('#d-universe').addEventListener('click', () => {
+  const s = state.selected;
+  if (inUniverse(s)) { if (confirm(`${s} を自動取得の対象から外しますか？`)) requestUniverse(s, '削除'); }
+  else requestUniverse(s);
+});
+$('#d-hold').addEventListener('click', () => {
+  state.settings.tab = 'holdings';
+  render();
+  $('#h-sym').value = state.selected;
+  $('#h-cost').value = state.quotes[state.selected]?.price?.toFixed(2) ?? '';
+  $('#h-shares').focus();
+});
+$('#hold-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const sym = $('#h-sym').value.trim().toUpperCase();
+  const shares = +$('#h-shares').value, cost = +$('#h-cost').value;
+  if (!sym || !(shares > 0) || !(cost > 0)) { toast('コード・株数・買値を入れてください', 'err'); return; }
+  state.settings.holdings.push({ id: Date.now().toString(36), sym, shares, cost, date: todayJst() });
+  store.save(state.settings);
+  e.target.reset();
+  if (!state.candles[sym]) loadCandles([sym]).then(tick); else render();
+  toast(`${sym} を保有株に登録しました`);
+});
+document.addEventListener('click', (e) => {
+  const del = e.target.closest('[data-del-hold]');
+  if (!del) return;
+  e.stopPropagation();
+  if (!confirm('この保有株を削除しますか？')) return;
+  state.settings.holdings = state.settings.holdings.filter((h) => h.id !== del.dataset.delHold);
+  store.save(state.settings);
+  render();
+}, true);
+$('#scr-funda').addEventListener('change', (e) => { state.scr.funda = e.target.value; renderScreener(); });
 $('#d-close').addEventListener('click', () => { state.selected = null; render(); });
 $('#d-ai-btn').addEventListener('click', askAi);
 $('#d-ai-chat').addEventListener('click', askInClaudeApp);
@@ -597,6 +818,7 @@ function openSettings() {
   $('#s-aimodel').innerHTML = AI_MODELS.map((m) => `<option value="${m.id}">${m.label}</option>`).join('');
   $('#s-aimodel').value = st.aiModel;
   $('#s-aikey').value = st.aiKey;
+  $('#s-mfilter').checked = st.marketFilter;
   renderWeightInputs();
   dlg.showModal();
 }
@@ -617,6 +839,7 @@ $('#s-save').addEventListener('click', (e) => {
     style: $('#s-style').value,
     aiKey: $('#s-aikey').value.trim(),
     aiModel: $('#s-aimodel').value,
+    marketFilter: $('#s-mfilter').checked,
   });
   if (st.weightMode === 'custom') st.custom = custom;
   if (st.provider === 'twelvedata' && !st.apiKey) { toast('Twelve Data には APIキーが必要です', 'err'); return; }

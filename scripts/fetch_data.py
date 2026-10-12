@@ -146,8 +146,33 @@ def google_news(u):
     return out
 
 
+MARKET = [("N225", "^N225"), ("SPX", "^GSPC"), ("VIX", "^VIX"), ("USDJPY", "JPY=X")]
+
+
+def fundamentals_of(t):
+    """PER・PBR・配当利回りなど。取れない項目は None。"""
+    info = t.info or {}
+    price = num(info.get("currentPrice")) or num(info.get("regularMarketPrice")) or num(info.get("previousClose"))
+    rate = num(info.get("dividendRate"))
+    if rate is not None and price:
+        dy = rate / price
+    else:
+        dy = num(info.get("trailingAnnualDividendYield"))
+    per = num(info.get("trailingPE"))
+    pbr = num(info.get("priceToBook"))
+    return {
+        "per": per if per and 0 < per < 1000 else None,
+        "fper": num(info.get("forwardPE")),
+        "pbr": pbr if pbr and 0 < pbr < 200 else None,
+        "divYield": dy if dy is not None and 0 <= dy < 0.3 else None,
+        "marketCap": num(info.get("marketCap")),
+        "sector": info.get("sector"),
+        "currency": info.get("currency"),
+    }
+
+
 def fetch_events_and_news(universe, today):
-    events, news = {}, {}
+    events, news, funda = {}, {}, {}
     for u in universe:
         t = yf.Ticker(u["yf"])
         ev = {"earnings": None, "exDiv": None, "exDivEstimated": False}
@@ -180,8 +205,12 @@ def fetch_events_and_news(universe, today):
             except Exception as e:  # noqa: BLE001
                 print(f"yahoo news {u['yf']}: {e}", file=sys.stderr)
         news[u["sym"]] = items
+        try:
+            funda[u["sym"]] = fundamentals_of(t)
+        except Exception as e:  # noqa: BLE001
+            print(f"info {u['yf']}: {e}", file=sys.stderr)
         time.sleep(0.4)
-    return events, news
+    return events, news, funda
 
 
 def main():
@@ -202,20 +231,30 @@ def main():
     with open(os.path.join(args.out, "history.json"), "w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False)
 
+    market = fetch_history([{"sym": k, "yf": y} for k, y in MARKET])
+    with open(os.path.join(args.out, "market.json"), "w", encoding="utf-8") as f:
+        json.dump(market, f, ensure_ascii=False)
+
     prev_events = load_json(os.path.join(args.prev, "events.json"), {})
     prev_news = load_json(os.path.join(args.prev, "news.json"), {})
+    prev_funda = load_json(os.path.join(args.prev, "fundamentals.json"), {})
     if args.force_daily or prev_events.get("date") != today.isoformat():
-        events, news = fetch_events_and_news(universe, today)
-        events_doc = {"date": today.isoformat(), "events": events}
-        news_doc = {"date": today.isoformat(), "news": news}
+        targets, base_ev, base_news, base_funda = universe, {}, {}, {}
     else:
-        events_doc, news_doc = prev_events, prev_news
-    with open(os.path.join(args.out, "events.json"), "w", encoding="utf-8") as f:
-        json.dump(events_doc, f, ensure_ascii=False)
-    with open(os.path.join(args.out, "news.json"), "w", encoding="utf-8") as f:
-        json.dump(news_doc, f, ensure_ascii=False)
+        # 同じ日のうちは、新しく追加された銘柄の分だけ取りに行く
+        known = set(prev_events.get("events", {})) & set(prev_funda.get("fundamentals", {}))
+        targets = [u for u in universe if u["sym"] not in known]
+        base_ev, base_news, base_funda = prev_events.get("events", {}), prev_news.get("news", {}), prev_funda.get("fundamentals", {})
+    events, news, funda = fetch_events_and_news(targets, today) if targets else ({}, {}, {})
+    date = today.isoformat() if targets is universe else prev_events.get("date")
+    events_doc = {"date": date, "events": {**base_ev, **events}}
+    news_doc = {"date": date, "news": {**base_news, **news}}
+    funda_doc = {"date": date, "fundamentals": {**base_funda, **funda}}
+    for name, doc in (("events", events_doc), ("news", news_doc), ("fundamentals", funda_doc)):
+        with open(os.path.join(args.out, f"{name}.json"), "w", encoding="utf-8") as f:
+            json.dump(doc, f, ensure_ascii=False)
     with_news = sum(1 for v in news_doc.get("news", {}).values() if v)
-    print(f"history: {len(history)}/{len(universe)} symbols, events date {events_doc.get('date')}, news for {with_news} symbols")
+    print(f"history: {len(history)}/{len(universe)} symbols, events date {events_doc.get('date')}, news for {with_news} symbols, market {list(market)}, fundamentals {len(funda_doc['fundamentals'])}")
 
 
 if __name__ == "__main__":

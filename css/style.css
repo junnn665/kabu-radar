@@ -220,3 +220,47 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
 
 .ai-btns { display: flex; gap: 6px; }
 .ai-head { gap: 8px; flex-wrap: wrap; }
+
+/* 地合い・損切り・保有株・答え合わせ */
+.regime:empty { display: none; }
+.idxs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 8px; }
+.idx { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; display: grid; }
+.idx small { color: var(--muted); font-size: 10px; }
+.idx b { font-size: 13px; }
+.idx i { font-style: normal; font-size: 11px; }
+.regs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.reg { border-radius: 8px; padding: 8px 10px; border: 1px solid var(--line); display: grid; gap: 2px; font-size: 13px; }
+.reg span { color: #fdba74; font-size: 12px; }
+.reg small { color: var(--muted); font-size: 11px; }
+.reg.good { border-color: color-mix(in srgb, var(--up) 50%, transparent); }
+.reg.good b { color: var(--up); }
+.reg.warn { border-color: #fb923c88; background: #fb923c10; }
+.reg.bad { border-color: var(--down); background: color-mix(in srgb, var(--down) 10%, transparent); }
+.reg.bad b { color: var(--down); }
+.lv { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 6px 0; }
+.lv b { color: var(--text); margin: 0 3px; }
+.lv i { font-style: normal; font-size: 11px; }
+.lv.compact { font-size: 11px; gap: 8px; margin: 4px 0 0; }
+#d-levels { margin-bottom: 12px; }
+#d-levels > small { display: block; font-size: 11px; }
+.funda { font-size: 12px; color: var(--muted); margin: 4px 0; }
+.funda b { color: var(--text); }
+.funda .sep { margin: 0 6px; color: var(--line); }
+.pen { display: block; font-size: 11px; font-weight: 400; margin-top: 2px; }
+.fnd { color: var(--muted); white-space: nowrap; font-size: 11px; }
+.hold-form { display: grid; grid-template-columns: 1.2fr 1fr 1fr auto; gap: 6px; margin-bottom: 12px; }
+.week { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; margin-bottom: 8px; }
+.week summary { display: flex; gap: 12px; align-items: center; padding: 10px 12px; cursor: pointer; font-size: 13px; }
+.week summary b { min-width: 80px; }
+.week .table-wrap { border: 0; border-top: 1px solid var(--line); border-radius: 0 0 10px 10px; }
+label.check { display: flex !important; gap: 8px; align-items: center; color: var(--text) !important; font-size: 13px !important; }
+label.check input { width: auto; }
+@media (max-width: 720px) {
+  .idxs { grid-template-columns: repeat(2, 1fr); }
+  .regs { grid-template-columns: 1fr; }
+  .hold-form { grid-template-columns: 1fr 1fr; }
+  .hold-form button { grid-column: span 2; }
+}
+
+td.warns .ev { white-space: normal; display: inline-block; margin: 0 2px 4px 0; }
+td.warns { min-width: 96px; }

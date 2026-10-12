@@ -5,11 +5,13 @@ import { SIGNALS, BASE_WEIGHTS, computeIndicators, signalsAt, scoreOf } from './
 export const WARMUP = 75; // 75日線が揃うまでは評価しない
 
 // シグナルごとの「点灯後 h 日のリターン」統計。series: { sym: candles[] }
-export function signalStats(series, { horizon = 5 } = {}) {
+// penaltyOf(sym, date) を渡すと、地合い（良好／悪化）別の「強い買い」成績も集計する
+export function signalStats(series, { horizon = 5, penaltyOf = null } = {}) {
   const acc = Object.fromEntries(SIGNALS.map((s) => [s.id, []]));
   const all = [];
   const scored = { strong: [], watch: [] };
-  for (const candles of Object.values(series)) {
+  const regime = { good: [], bad: [] };
+  for (const [sym, candles] of Object.entries(series)) {
     if (!candles || candles.length < WARMUP + horizon + 1) continue;
     const ind = computeIndicators(candles);
     for (let i = WARMUP; i < candles.length - horizon; i++) {
@@ -20,6 +22,7 @@ export function signalStats(series, { horizon = 5 } = {}) {
       const sc = scoreOf(ids);
       if (sc >= 40) scored.strong.push(ret);
       else if (sc >= 20) scored.watch.push(ret);
+      if (penaltyOf && sc >= 40) (penaltyOf(sym, candles[i].date) > 0 ? regime.bad : regime.good).push(ret);
     }
   }
   const stats = {};
@@ -29,6 +32,7 @@ export function signalStats(series, { horizon = 5 } = {}) {
     baseline: summarize(all),
     stats,
     byVerdict: { strong: summarize(scored.strong), watch: summarize(scored.watch) },
+    byRegime: penaltyOf ? { good: summarize(regime.good), bad: summarize(regime.bad) } : null,
   };
 }
 
@@ -62,14 +66,15 @@ export function tuneWeights(bt, { minN = 30 } = {}) {
 export const DEFAULT_RULES = { entry: 40, hold: 10, takeProfit: 0.1, stopLoss: -0.05, exitScore: -30 };
 
 // 「スコアが entry 以上になったら終値で買い、利確・損切り・保有期限・スコア悪化で売る」を過去に適用
-export function simulate(candles, weights = BASE_WEIGHTS, rules = DEFAULT_RULES) {
+// penaltyOf(date) を渡すと地合いフィルターをかけたスコアで売買する
+export function simulate(candles, weights = BASE_WEIGHTS, rules = DEFAULT_RULES, penaltyOf = null) {
   const trades = [];
   if (!candles || candles.length < WARMUP + 2) return trades;
   const ind = computeIndicators(candles);
   let pos = null;
   for (let i = WARMUP; i < candles.length; i++) {
     const ids = signalsAt(ind, i).map((f) => f.id);
-    const sc = scoreOf(ids, weights);
+    const sc = Math.max(-100, scoreOf(ids, weights) - (penaltyOf ? penaltyOf(candles[i].date) : 0));
     const px = candles[i].close;
     if (pos) {
       const ret = px / pos.entryPrice - 1;

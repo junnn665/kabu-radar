@@ -1,0 +1,52 @@
+name: Universe request
+
+# サイトの「対象銘柄に追加」ボタンから作られた Issue を処理して config/universe.json を更新する
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: universe
+  cancel-in-progress: false
+
+jobs:
+  update:
+    # リポジトリの持ち主が作った Issue だけを処理する
+    if: github.event.issue.user.login == github.repository_owner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install --quiet yfinance
+      - id: apply
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: python scripts/universe_issue.py
+      - name: コミットしてデータ更新を起動
+        if: steps.apply.outputs.result == 'changed'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MSG: ${{ steps.apply.outputs.message }}
+        run: |
+          git config user.name "kabu-radar-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add config/universe.json
+          git commit -m "対象銘柄の更新: $MSG (#${{ github.event.issue.number }})"
+          git push
+          gh workflow run pages.yml --ref main -R "${{ github.repository }}"
+      - name: Issue に結果を書いて閉じる
+        if: always() && steps.apply.outputs.result != 'skip'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MSG: ${{ steps.apply.outputs.message || '処理中にエラーが起きました。Actions のログを確認してください。' }}
+        run: |
+          gh issue comment ${{ github.event.issue.number }} -R "${{ github.repository }}" --body "$MSG"
+          gh issue close ${{ github.event.issue.number }} -R "${{ github.repository }}"

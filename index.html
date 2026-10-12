@@ -31,7 +31,9 @@
     <nav class="tabs">
       <button class="tab" data-tab="watch">監視</button>
       <button class="tab" data-tab="screener">スクリーナー</button>
+      <button class="tab" data-tab="holdings">保有株</button>
       <button class="tab" data-tab="paper">ペーパートレード</button>
+      <button class="tab" data-tab="review">答え合わせ</button>
       <button class="tab" data-tab="backtest">バックテスト</button>
     </nav>
   </header>
@@ -39,6 +41,7 @@
   <main>
     <!-- 監視 -->
     <div id="view-watch" class="view">
+      <section id="regime" class="regime"></section>
       <section>
         <h2>今日の狙い目 <small>ウォッチリストからスコア20以上</small></h2>
         <div id="picks" class="picks"></div>
@@ -80,6 +83,7 @@
         <div class="d-grid">
           <div>
             <h3 id="d-score"></h3>
+            <div id="d-levels"></div>
             <ul id="d-signals" class="signals"></ul>
             <h3 class="mt">ニュース</h3>
             <ul id="d-news" class="news"></ul>
@@ -90,6 +94,8 @@
             <label>下抜けで通知 <input id="al-below" type="number" step="any" inputmode="decimal" /></label>
             <button id="al-save">保存</button>
             <button id="d-remove" class="ghost danger">ウォッチリストから外す</button>
+            <button id="d-hold" class="ghost">＋保有株に登録</button>
+            <button id="d-universe" class="ghost" hidden>自動取得の対象に追加をリクエスト</button>
           </div>
         </div>
       </section>
@@ -107,14 +113,43 @@
             <option value="0">0点以上</option>
             <option value="-100">すべて</option>
           </select>
+          <select id="scr-funda">
+            <option value="all">財務条件なし</option>
+            <option value="div">高配当（利回り3%以上）</option>
+            <option value="pbr">割安（PBR1倍未満）</option>
+            <option value="per">割安（PER15倍未満）</option>
+            <option value="divdip">高配当×売られすぎ</option>
+            <option value="value">割安×上昇トレンド</option>
+          </select>
           <input id="scr-q" placeholder="銘柄名・コードで絞り込み" />
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>銘柄</th><th class="num">現在値</th><th>スコア</th><th class="hide-sm">点灯中のシグナル</th><th></th></tr></thead>
+            <thead><tr><th>銘柄</th><th class="num">現在値</th><th>スコア</th><th>指標</th><th class="hide-sm">点灯中のシグナル</th><th></th></tr></thead>
             <tbody id="scr-rows"></tbody>
           </table>
         </div>
+      </section>
+    </div>
+
+    <!-- 保有株 -->
+    <div id="view-holdings" class="view" hidden>
+      <section>
+        <h2>保有株 <small>この端末にだけ保存されます</small></h2>
+        <form id="hold-form" class="hold-form">
+          <input id="h-sym" placeholder="コード（例: 7203）" autocomplete="off" />
+          <input id="h-shares" type="number" step="any" min="0" inputmode="decimal" placeholder="株数" />
+          <input id="h-cost" type="number" step="any" min="0" inputmode="decimal" placeholder="買値（1株）" />
+          <button>登録</button>
+        </form>
+        <div id="hold-sum"></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>銘柄</th><th class="num hide-sm">株数</th><th class="num">現在値</th><th class="num">損益</th><th class="hide-sm">目安</th><th>注意</th></tr></thead>
+            <tbody id="hold-rows"></tbody>
+          </table>
+        </div>
+        <p class="muted small">損切りは「買値−ATR×2」と「直近高値−ATR×3」の高い方。売りシグナル・損切りライン割れ・決算3日前はブラウザ通知でお知らせします（1日1回）。</p>
       </section>
     </div>
 
@@ -127,6 +162,14 @@
       <section>
         <h2>過去1年シミュレーション <small>同じルールを過去データに適用</small></h2>
         <div id="paper-sim"></div>
+      </section>
+    </div>
+
+    <!-- 答え合わせ -->
+    <div id="view-review" class="view" hidden>
+      <section>
+        <h2>答え合わせ <small>「強い買い」のその後</small></h2>
+        <div id="review-body"></div>
       </section>
     </div>
 
@@ -168,6 +211,7 @@
           </select>
         </label>
         <label>投資スタイル <select id="s-style"></select></label>
+        <label class="check"><input type="checkbox" id="s-mfilter" /> 地合いフィルター（相場全体が悪い日は買いシグナルを割り引く）</label>
         <details>
           <summary>シグナルごとの配点</summary>
           <div id="s-weights" class="weights"></div>
