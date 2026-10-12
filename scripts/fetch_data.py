@@ -34,7 +34,11 @@ import yfinance as yf
 
 JST = dt.timezone(dt.timedelta(hours=9))
 UA = {"User-Agent": "Mozilla/5.0 (compatible; kabuka-hack/1.0)"}
-JPX_LIST = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
+JPX_LIST_PAGE = "https://www.jpx.co.jp/markets/statistics-equities/misc/01.html"
+JPX_LIST_FALLBACK = [
+    "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xlsx",
+    "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls",
+]
 JPX_EARNINGS = "https://www.jpx.co.jp/listing/event-schedules/financial-announcement/index.html"
 MARKET = [("N225", "^N225"), ("TOPIX", "1306.T"), ("SPX", "^GSPC"), ("VIX", "^VIX"), ("USDJPY", "JPY=X")]
 KEEP_BARS = 260
@@ -108,7 +112,23 @@ def parse_universe(df):
 
 
 def fetch_universe():
-    df = pd.read_excel(io.BytesIO(http_get(JPX_LIST, 60)), dtype=str)
+    """JPX の「東証上場銘柄一覧」ページからファイルの場所を探してダウンロード（拡張子やURLが変わっても追従）"""
+    urls = []
+    try:
+        html = http_get(JPX_LIST_PAGE).decode("utf-8", "ignore")
+        urls = [urllib.parse.urljoin(JPX_LIST_PAGE, h) for h in re.findall(r'href="([^"]*data_j\.xlsx?)"', html)]
+    except Exception as e:  # noqa: BLE001
+        log_err("JPX銘柄一覧ページ", e)
+    last = None
+    for url in urls + JPX_LIST_FALLBACK:
+        try:
+            df = pd.read_excel(io.BytesIO(http_get(url, 60)), dtype=str)
+            break
+        except Exception as e:  # noqa: BLE001
+            last = e
+    else:
+        raise RuntimeError(f"銘柄一覧をダウンロードできません: {last}")
+    DIAG["universeUrl"] = url
     out = parse_universe(df)
     if len(out) < 1000:
         raise RuntimeError(f"銘柄数が少なすぎます: {len(out)}")
