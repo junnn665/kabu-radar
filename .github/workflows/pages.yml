@@ -58,8 +58,14 @@ jobs:
         id: fetch
         continue-on-error: true
         run: |
-          pip install --quiet yfinance pandas xlrd openpyxl
-          python scripts/fetch_data.py --prev prev --cache cache --out raw ${{ inputs.force_daily && '--force-daily' || '' }}
+          set -o pipefail
+          pip install --quiet yfinance pandas xlrd openpyxl 2>&1 | tail -3
+          python scripts/fetch_data.py --prev prev --cache cache --out raw ${{ inputs.force_daily && '--force-daily' || '' }} 2>&1 | tee fetch.log
+          echo "::notice title=取得結果::$(tail -n 1 fetch.log)"
+
+      - name: 取得エラーの内容を表示
+        if: steps.fetch.outcome != 'success'
+        run: echo "::error title=取得エラー::$(tail -c 1500 fetch.log 2>/dev/null | tr '\n' '|')"
 
       - name: 日足キャッシュを保存
         if: steps.fetch.outcome == 'success'
