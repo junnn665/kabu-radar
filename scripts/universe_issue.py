@@ -24,11 +24,15 @@ def out(result, message):
     print(result, message)
 
 
+# 東証 → 名証 → 札証 → 福証 の順に探す（Yahoo Finance の接尾辞）
+EXCHANGES = [(".T", "東証"), (".N", "名証"), (".S", "札証"), (".F", "福証")]
+
+
 def to_yf(code):
-    # 東証のコードは4桁の数字（または 130A のような英数字4桁）
+    """日本株のコード（4桁の数字、または 130A のような英数字4桁）なら候補を返す"""
     if re.fullmatch(r"\d{3}[0-9A-Z]", code):
-        return code + ".T", "JP"
-    return None, None
+        return [(code + suf, ex) for suf, ex in EXCHANGES]
+    return []
 
 
 def main():
@@ -66,21 +70,28 @@ def main():
     else:
         if exists:
             return out("noop", f"{exists['name']}（{code}）はすでに対象銘柄です。")
-        yft, market = to_yf(code)
+        cands = to_yf(code)
+        if not cands:
+            return out("error", f"{code} は日本株のコード（4桁）ではありません。日本株のみ対応しています。")
+        yft = ex = t = None
+        for cand, exname in cands:
+            tk = yf.Ticker(cand)
+            try:
+                if not tk.history(period="1mo").empty:
+                    yft, ex, t = cand, exname, tk
+                    break
+            except Exception:  # noqa: BLE001
+                continue
         if not yft:
-            return out("error", f"{code} は東証のコード（4桁）ではありません。日本株のみ対応しています。")
-        t = yf.Ticker(yft)
-        hist = t.history(period="1mo")
-        if hist.empty:
-            return out("error", f"{code}（Yahoo Finance: {yft}）の株価が見つかりませんでした。コードを確認してください。")
+            return out("error", f"{code} の株価が東証・名証・札証・福証のどこでも見つかりませんでした。コードを確認してください。")
         if not name:
             try:
                 info = t.info or {}
                 name = info.get("shortName") or info.get("longName") or code
             except Exception:  # noqa: BLE001
                 name = code
-        syms.append({"sym": code, "yf": yft, "name": name, "seg": "X"})
-        msg = f"{name}（{code}）を対象銘柄に追加しました。数分後のデータ更新から表示されます。"
+        syms.append({"sym": code, "yf": yft, "name": name, "seg": "X", "exchange": ex})
+        msg = f"{name}（{code}・{ex}）を対象銘柄に追加しました。数分後のデータ更新から表示されます。"
 
     with open(PATH, "w", encoding="utf-8") as f:
         json.dump(doc, f, ensure_ascii=False, indent=2)
