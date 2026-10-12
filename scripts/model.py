@@ -298,6 +298,7 @@ def main():
         usable = usable[usable["date"] >= dates[max(0, len(dates) - TRAIN_WINDOW)]]
         model = train(usable, cols, label)
         os.makedirs(args.cache, exist_ok=True)
+        open(os.path.join(args.out, "model_trained"), "w").close()  # このモデルをキャッシュに保存させる目印
         model.save_model(model_path)
         imp = sorted(zip(cols, model.feature_importance("gain")), key=lambda x: -x[1])
         total = sum(v for _, v in imp) or 1

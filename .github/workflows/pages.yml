@@ -91,10 +91,10 @@ jobs:
         if: steps.model.outcome == 'failure'
         run: echo "::warning title=AI予測エラー::$(tail -c 1500 model.log 2>/dev/null | tr '\n' '|')"
 
-      - name: キャッシュを保存するか（全銘柄を取り直した回だけ）
+      - name: キャッシュを保存するか（全銘柄を取り直した回か、AIを学習し直した回だけ）
         id: tier
         if: steps.fetch.outcome == 'success'
-        run: echo "save=$(python -c "import json;m=json.load(open('raw/fetch_meta.json'));print('yes' if m['history']['tier']!='active' else 'no')")" >> "$GITHUB_OUTPUT"
+        run: echo "save=$(python -c "import json,os;m=json.load(open('raw/fetch_meta.json'));print('yes' if m['history']['tier']!='active' or os.path.exists('raw/model_trained') else 'no')")" >> "$GITHUB_OUTPUT"
 
       - name: 日足キャッシュを保存
         if: steps.fetch.outcome == 'success' && steps.tier.outputs.save == 'yes'
