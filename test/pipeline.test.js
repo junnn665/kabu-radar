@@ -48,7 +48,7 @@ test('build_data generates all files and keeps paper-trade state between runs', 
   assert.equal(first.events.earnings, soon);
   assert.equal(first.pbr, 0.9);
   assert.ok(first.stop < first.price && first.target > first.price);
-  for (const r of scr.rows) assert.equal(r.score, Math.max(-100, r.rawScore - r.penalty));
+  for (const r of scr.rows) assert.equal(r.score, r.rawScore);
   const mk = read(path.join(out1, 'market.json'));
   assert.ok(mk.regime.JP && mk.indices.N225 && mk.indices.TOPIX);
   const rv = read(path.join(out1, 'review.json'));

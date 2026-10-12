@@ -2,10 +2,11 @@
 // 指標は全期間で一度だけ計算し（未来の値は使わない因果的な指標のみ）、任意の日 i 時点のシグナルを評価できる。
 // これにより「今の判定」と「過去の成績（バックテスト）」が同じロジックで計算される。
 //
-// v1 からの変更（日本株40銘柄・1年の実データで、市場平均との差で検証した結果）
-//  - 両期間で効いていなかった MACD 好転・RSI(14)<30・高値ブレイク を外すか弱めた
-//  - 短期の行き過ぎ（RSI(2)）、上昇トレンド中の押し目、出来高を伴う上昇／窓開け を重視
-//  - 上昇トレンドの急な崩れ（75日線の上だが25日線から−5%以上）を強い警戒に
+// 配点の根拠（「5営業日後のリターン − 同じ日の全銘柄平均」で検証）
+//  v2: 日本株40銘柄で設計 → MACD 好転・RSI(14)<30 は市場平均に負けていたため除外
+//  v3: 東証3,682銘柄・188営業日（約30万件）で再検証し、全銘柄では効かなかった
+//      出来高急増・上昇／60日高値ブレイク／下ヒゲ反発／25日線からの上振れ／ゴールデンクロス を 0 点に。
+//      押し目・短期の売られすぎ・ボリンジャー下限・急落 がプラス、過熱・上限・崩れ・デッドクロス・投げ売りがマイナス
 import { sma, rsi, bollinger } from './indicators.js';
 
 // base は標準配点、kind は配点スタイル（逆張り / 順張り）の分類
@@ -13,17 +14,17 @@ export const SIGNALS = [
   { id: 'dip_in_uptrend', label: '上昇トレンド中の押し目', base: 25, kind: 'contrarian', desc: '75日線が上向きの銘柄で、RSI(2)が10未満まで急落' },
   { id: 'short_oversold', label: '短期の売られすぎ', base: 10, kind: 'contrarian', desc: 'RSI(2)が10未満' },
   { id: 'bb_lower', label: 'ボリンジャー下限', base: 10, kind: 'contrarian', desc: '終値が−2σ以下' },
-  { id: 'sharp_drop', label: '5日で急落', base: 5, kind: 'contrarian', desc: '5営業日で−7%以上' },
-  { id: 'hammer', label: '下ヒゲ反発', base: 5, kind: 'contrarian', desc: '下落後に安値から大きく戻して引けた' },
-  { id: 'vol_surge_up', label: '出来高急増・上昇', base: 15, kind: 'trend', desc: '出来高が20日平均の2倍以上で上昇' },
-  { id: 'gap_up_volume', label: '大商いの窓開け上昇', base: 15, kind: 'trend', desc: '前日終値より3%以上高く始まり、出来高2倍以上（材料・決算サプライズなど）' },
-  { id: 'golden_cross', label: 'ゴールデンクロス', base: 5, kind: 'trend', desc: '5日線が25日線を上抜け（直近3日）' },
-  { id: 'breakout', label: '60日高値ブレイク', base: 5, kind: 'trend', desc: '直近60日の高値を更新' },
+  { id: 'sharp_drop', label: '5日で急落', base: 8, kind: 'contrarian', desc: '5営業日で−7%以上' },
+  { id: 'hammer', label: '下ヒゲ反発', base: 0, kind: 'contrarian', desc: '下落後に安値から大きく戻して引けた' },
+  { id: 'vol_surge_up', label: '出来高急増・上昇', base: 0, kind: 'trend', desc: '出来高が20日平均の2倍以上で上昇' },
+  { id: 'gap_up_volume', label: '大商いの窓開け上昇', base: 10, kind: 'trend', desc: '前日終値より3%以上高く始まり、出来高2倍以上（材料・決算サプライズなど）' },
+  { id: 'golden_cross', label: 'ゴールデンクロス', base: 0, kind: 'trend', desc: '5日線が25日線を上抜け（直近3日）' },
+  { id: 'breakout', label: '60日高値ブレイク', base: 0, kind: 'trend', desc: '直近60日の高値を更新' },
   { id: 'uptrend', label: '上昇トレンド', base: 5, kind: 'trend', desc: '75日線の上で75日線が上向き' },
-  { id: 'short_overbought', label: '短期の過熱', base: -15, kind: 'contrarian', desc: 'RSI(2)が90超' },
+  { id: 'short_overbought', label: '短期の過熱', base: -10, kind: 'contrarian', desc: 'RSI(2)が90超' },
   { id: 'bb_upper', label: 'ボリンジャー上限', base: -10, kind: 'contrarian', desc: '終値が+2σ以上' },
-  { id: 'overheated', label: '25日線から大きく上振れ', base: -5, kind: 'contrarian', desc: '25日移動平均乖離率が+15%以上' },
-  { id: 'trend_break', label: '上昇トレンドの急な崩れ', base: -15, kind: 'trend', desc: '75日線の上にいるのに25日線を5%以上割り込んだ' },
+  { id: 'overheated', label: '25日線から大きく上振れ', base: 0, kind: 'contrarian', desc: '25日移動平均乖離率が+15%以上' },
+  { id: 'trend_break', label: '上昇トレンドの急な崩れ', base: -10, kind: 'trend', desc: '75日線の上にいるのに25日線を5%以上割り込んだ' },
   { id: 'dead_cross', label: 'デッドクロス', base: -10, kind: 'trend', desc: '5日線が25日線を下抜け（直近3日）' },
   { id: 'vol_surge_down', label: '出来高を伴う下落', base: -10, kind: 'trend', desc: '出来高が20日平均の2倍以上で下落' },
   { id: 'downtrend', label: '下降トレンド', base: -5, kind: 'trend', desc: '75日線の下で25日線が下向き' },

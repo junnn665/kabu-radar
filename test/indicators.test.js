@@ -57,9 +57,11 @@ test('signals do not look ahead: evaluating a prefix gives the same result', () 
   assert.deepEqual(signalsAt(full, i), signalsAt(prefix, i));
 });
 
-test('scoreOf clamps', () => {
-  assert.equal(scoreOf(['dip_in_uptrend', 'gap_up_volume', 'vol_surge_up', 'bb_lower', 'short_oversold', 'sharp_drop', 'hammer', 'golden_cross', 'breakout', 'uptrend']), 100);
-  assert.equal(scoreOf(['trend_break', 'short_overbought', 'dead_cross', 'vol_surge_down', 'bb_upper', 'overheated', 'downtrend']), -70);
+test('scoreOf sums weights and clamps to ±100', () => {
+  assert.equal(scoreOf(['dip_in_uptrend', 'bb_lower']), 35);
+  const big = Object.fromEntries(Object.keys(BASE_WEIGHTS).map((k) => [k, 60]));
+  assert.equal(scoreOf(['dip_in_uptrend', 'bb_lower'], big), 100);
+  assert.equal(scoreOf(['trend_break', 'dead_cross'], { trend_break: -70, dead_cross: -70 }), -100);
 });
 
 test('style multipliers', () => {

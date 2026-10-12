@@ -88,14 +88,21 @@ export function panelStats(P, { from = 0, to = P.dates.length, weights = BASE_WE
 }
 
 // 成績から配点を作る：市場平均を上回った分（%）×10点を、標準配点と半々で混ぜる。サンプルが少なければ標準のまま。
+// 点数の大きさは標準配点に揃える（市場平均との差は0.数%と小さいため、そのままだと「強い買い」に届かない）
 export function tuneWeights(bt, { minN = 40, blend = 0.5 } = {}) {
-  const out = {};
+  const learned = {};
   for (const s of SIGNALS) {
     const st = bt.stats[s.id];
-    const edge = st?.excess ?? (st?.avg != null && bt.baseline.avg != null ? st.avg - bt.baseline.avg : null);
-    if (!st || st.n < minN || edge == null) { out[s.id] = s.base; continue; }
-    const learned = Math.max(-30, Math.min(30, edge * 100 * 10));
-    out[s.id] = Math.round((1 - blend) * s.base + blend * learned);
+    const edge = st?.excess ?? (st?.avg != null && bt.baseline?.avg != null ? st.avg - bt.baseline.avg : null);
+    if (st && st.n >= minN && edge != null) learned[s.id] = edge;
+  }
+  const maxEdge = Math.max(...Object.values(learned).map(Math.abs), 1e-9);
+  const maxBase = Math.max(...SIGNALS.map((s) => Math.abs(s.base)));
+  const out = {};
+  for (const s of SIGNALS) {
+    if (!(s.id in learned)) { out[s.id] = s.base; continue; }
+    const l = (learned[s.id] / maxEdge) * maxBase;
+    out[s.id] = Math.round((1 - blend) * s.base + blend * l);
   }
   return out;
 }

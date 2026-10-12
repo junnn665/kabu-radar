@@ -25,7 +25,8 @@ const DEFAULTS = {
   aiModel: AI_MODEL_DEFAULT,
   tab: 'watch',
   holdings: [],       // [{ id, sym, shares, cost, date }]
-  marketFilter: true, // 地合いフィルター
+  marketFilter: false, // 地合いフィルター（検証で逆効果だったため標準はオフ）
+  v: 3,
 };
 const store = {
   load() {
@@ -36,8 +37,13 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 
+function migrate(st) {
+  if ((st.v || 0) < 3) { st.marketFilter = false; st.v = 3; }
+  return st;
+}
+
 const state = {
-  settings: store.load(),
+  settings: migrate(store.load()),
   provider: null,
   candles: {},
   quotes: {},
@@ -297,11 +303,11 @@ function renderRegime() {
   const reg = (mkt, label) => {
     const r = m.regime?.[mkt];
     if (!r) return '';
-    return `<div class="reg ${r.state.key}"><b>${label}：${r.state.label}</b>${r.penalty ? `<span>買いシグナルを −${r.penalty}点</span>` : ''}${r.notes.length ? `<small>${r.notes.map(esc).join('・')}</small>` : ''}</div>`;
+    return `<div class="reg ${r.state.key}"><b>${label}：${r.state.label}</b>${r.penalty && state.settings.marketFilter ? `<span>買いシグナルを −${r.penalty}点</span>` : ''}${r.notes.length ? `<small>${r.notes.map(esc).join('・')}</small>` : ''}</div>`;
   };
   $('#regime').innerHTML = `<div class="idxs">${chip('N225', '日経平均')}${chip('TOPIX', 'TOPIX(ETF)')}${chip('SPX', 'S&P500')}${chip('USDJPY', 'ドル円')}</div>
     <div class="regs one">${reg('JP', '地合い')}</div>
-    ${state.settings.marketFilter ? '' : '<small class="muted">地合いフィルターはオフです（設定で変更）</small>'}`;
+    <small class="muted">${state.settings.marketFilter ? '地合いフィルター：オン（悪い日は買いシグナルを割り引き）' : '地合いは参考表示です（割り引きはオフ。相場が悪い日の押し目はむしろ反発しやすいため）'}</small>`;
 }
 
 function levelLine(s, compact = false) {
@@ -694,8 +700,9 @@ function renderBacktest() {
     <h3>売買ルールで回した場合（スコア${DEFAULT_RULES.entry}以上で買い／+10%利確・−5%損切り・最長10日）</h3>
     <div class="table-wrap"><table>
       <thead><tr><th>配点</th><th class="num">取引</th><th class="num">勝率</th><th class="num">平均</th><th class="num">合計損益</th></tr></thead>
-      <tbody>${[['標準配点', strat.base], ['標準＋地合いフィルター', strat.filtered], ['学習後の配点＋地合い', strat.tuned]].map(([l, st]) => st ? `<tr><td>${l}</td><td class="num mono">${st.trades.toLocaleString()}</td><td class="num mono">${st.win != null ? Math.round(st.win * 100) + '%' : '—'}</td><td class="num mono ${sign(st.avg)}">${pctf(st.avg, 2)}</td><td class="num mono ${sign(st.pnl)}">${yen(st.pnl)}</td></tr>` : '').join('')}</tbody>
+      <tbody>${[['標準配点', strat.base], ['標準＋地合いフィルター', strat.filtered], ['毎週学び直す配点', strat.tuned]].map(([l, st]) => st ? `<tr><td>${l}</td><td class="num mono">${st.trades.toLocaleString()}</td><td class="num mono">${st.win != null ? Math.round(st.win * 100) + '%' : '—'}</td><td class="num mono ${sign(st.avg)}">${pctf(st.avg, 2)}</td><td class="num mono ${sign(st.pnl)}">${yen(st.pnl)}</td></tr>` : '').join('')}</tbody>
     </table></div>
+    <p class="muted small">地合いフィルターは、相場が悪い日の押し目のほうが反発しやすく成績が良かったため、標準ではオフにしています（設定でオンにできます）。</p>
     <p class="muted small">※ 1回¥100,000で売買した場合の合計。手数料・税金は含みません。過去の成績は将来を保証しません。</p>`;
 }
 

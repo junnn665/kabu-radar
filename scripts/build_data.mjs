@@ -109,7 +109,7 @@ async function main() {
   const tuned = wf.weightsNow;
   const strategy = {};
   const recentTrades = [];
-  for (const [mode, w, filt] of [['base', BASE_WEIGHTS, false], ['filtered', BASE_WEIGHTS, true], ['tuned', tuned, true]]) {
+  for (const [mode, w, filt] of [['base', BASE_WEIGHTS, false], ['filtered', BASE_WEIGHTS, true], ['tuned', tuned, false]]) {
     const all = [];
     for (const s of syms) {
       const tr = simulate(history[s], w, DEFAULT_RULES, filt ? (d) => penaltyOf(s, d) : null);
@@ -117,7 +117,7 @@ async function main() {
         t.sym = s; t.name = meta[s].name;
         all.push(t);
       }
-      if (mode === 'filtered') recentTrades.push(...tr);
+      if (mode === 'base') recentTrades.push(...tr);
     }
     strategy[mode] = tradeSummary(all, NOTIONAL);
   }
@@ -127,7 +127,7 @@ async function main() {
     rules: DEFAULT_RULES, notional: NOTIONAL, strategy, trades: recentTrades.slice(0, 120),
   });
 
-  // 4) スクリーナー（score は地合いで割り引いた後の点数）
+  // 4) スクリーナー（地合いフィルターは検証で逆効果だったため、score には反映しない。penalty は参考値）
   const details = {};
   const rows = syms.map((s) => {
     const a = analyze(history[s]);
@@ -141,7 +141,7 @@ async function main() {
     return {
       sym: s, name: meta[s].name, seg: meta[s].seg || null, sector: meta[s].sector || null,
       price, changePct: r2((price / prevClose - 1) * 100),
-      rawScore: a.score, penalty: pen, score: Math.max(-100, a.score - pen), tunedScore: scoreOf(ids, tuned), ids,
+      rawScore: a.score, penalty: pen, score: a.score, tunedScore: scoreOf(ids, tuned), ids,
       liquid: a.liquid, turnover: a.turnover ? Math.round(a.turnover / 1e6) : null, // 百万円
       events: ev.earnings || ev.exDiv ? { earnings: ev.earnings || null, exDiv: ev.exDiv || null, exDivEstimated: !!ev.exDivEstimated } : null,
       per: f.per != null ? r2(f.per) : null, pbr: f.pbr != null ? r2(f.pbr) : null, divYield: f.divYield != null ? Math.round(f.divYield * 10000) / 10000 : null,
@@ -154,11 +154,11 @@ async function main() {
   writeJson(path.join(OUT, 'fundamentals.json'), fundaDoc);
 
   // 5) 答え合わせ（直近40営業日に「強い買い」だった銘柄のその後）
-  const review = computeReview(history, { meta, index: { JP: market.TOPIX || market.N225 }, penaltyOf, days: 40 });
+  const review = computeReview(history, { meta, index: { JP: market.TOPIX || market.N225 }, days: 40 });
   for (const w of review.weeks) w.picks = w.picks.slice(0, 60);
   writeJson(path.join(OUT, 'review.json'), { updatedAt: now.toISOString(), ...review });
 
-  // 6) ペーパートレード（サジェスト通り＝標準配点・地合いフィルター込みで機械的に売買）
+  // 6) ペーパートレード（サジェスト通り＝標準配点で機械的に売買）
   const paper = readJson(path.join(PREV, 'paper.json'), null) || {
     startedAt: jstDate, notional: NOTIONAL, rules: DEFAULT_RULES, open: [], closed: [],
   };
