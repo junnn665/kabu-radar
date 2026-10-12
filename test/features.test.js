@@ -80,3 +80,40 @@ test('liquidity filter drops thin stocks from the panel', async () => {
   assert.equal(buildPanel({ A: thin }).n, 0);
   assert.ok(buildPanel({ A: cs }).n > 0);
 });
+
+test('AI live tracking: logs liquid predictions and scores them 5 days later', async () => {
+  const { updateLog, evaluateLog } = await import('../js/aitrack.js');
+  const demo = new DemoProvider();
+  const history = {};
+  const syms = Array.from({ length: 60 }, (_, i) => String(1300 + i));
+  for (const s of syms) history[s] = await demo.getDailyCandles(s);
+  const dates = history[syms[0]].map((c) => c.date);
+  const d0 = dates.at(-10), d1 = dates.at(-2);
+  // 予測＝実際の5日後リターン（完全に当たる予測）なら、上位は市場平均を上回り IC は 1 になる
+  const perfect = Object.fromEntries(syms.map((s) => { const cs = history[s]; const i = cs.findIndex((c) => c.date === d0); return [s, [(cs[i + 5].close / cs[i].close - 1) * 100, 0.5]]; }));
+  let log = updateLog(null, d0, perfect);
+  log = updateLog(log, d1, { ...perfect, thin: [5, null] });
+  assert.ok(!('thin' in log.days[d1]));
+  const r = evaluateLog(log, history);
+  const day0 = r.days.find((d) => d.date === d0);
+  assert.ok(day0.done && day0.top.excess > 0 && day0.bottom.excess < 0);
+  assert.ok(day0.ic > 0.99);
+  assert.equal(r.days.find((d) => d.date === d1).done, false);
+  assert.equal(r.total.days, 1);
+});
+
+test('CSV import: SBI証券のポートフォリオ（Shift_JIS・特定とNISAに分割）', async () => {
+  const { decodeCsv, parseCsvText, extractHoldings } = await import('../js/csvimport.js');
+  const fs = await import('node:fs');
+  const buf = fs.readFileSync(new URL('./fixtures/sbi_portfolio.csv', import.meta.url));
+  const { holdings } = extractHoldings(parseCsvText(decodeCsv(buf)));
+  const by = Object.fromEntries(holdings.map((h) => [h.sym, h]));
+  assert.deepEqual(Object.keys(by).sort(), ['2928', '7203', '8219', '9434']); // 投資信託は除外
+  assert.equal(by['7203'].shares, 300);
+  assert.equal(by['7203'].cost, Math.round(((2800 * 100 + 2500 * 200) / 300) * 100) / 100);
+  assert.equal(by['2928'].cost, 1247);
+  assert.equal(by['8219'].name, '青山商事');
+  // 楽天証券のような「銘柄コード」列の形式
+  const r = extractHoldings(parseCsvText('銘柄コード,銘柄,口座,保有数量,平均取得価額\n7203,トヨタ自動車,特定,"1,000","2,750.5"\n'));
+  assert.deepEqual(r.holdings.map((h) => [h.sym, h.shares, h.cost]), [['7203', 1000, 2750.5]]);
+});

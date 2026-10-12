@@ -148,6 +148,11 @@
           <input id="h-cost" type="number" step="any" min="0" inputmode="decimal" placeholder="買値（1株）" />
           <button>登録</button>
         </form>
+        <div class="csv-row">
+          <button id="csv-btn" class="ghost">📄 証券会社のCSVから取り込む</button>
+          <input id="csv-file" type="file" accept=".csv,text/csv" hidden />
+          <small class="muted">SBI証券：PCサイトの「ポートフォリオ」→「CSVダウンロード」のファイル（特定・NISAは自動で合算）</small>
+        </div>
         <div id="hold-sum"></div>
         <div class="table-wrap">
           <table>

@@ -11,6 +11,7 @@ import { buildPanel, panelStats, walkForward, simulate, tradeSummary, DEFAULT_RU
 import { makeRegime } from '../js/market.js';
 import { computeReview } from '../js/review.js';
 import { levels } from '../js/levels.js';
+import { updateLog, evaluateLog } from '../js/aitrack.js';
 import { explain, explainGithub, AI_MODEL_DEFAULT, GH_MODEL_DEFAULT } from '../js/ai.js';
 
 const args = Object.fromEntries(
@@ -145,6 +146,12 @@ async function main() {
   }
   // AI予測モデルの検証結果（学習は朝だけ。日中は同じモデルで予測し直す）
   writeJson(path.join(OUT, 'model.json'), predDoc ? { date: predDoc.date, model: predDoc.model, report: predDoc.report } : null);
+  // AI予測の判断理由（銘柄ごとの要因）と、本番の答え合わせ
+  const reasonsDoc = readJson(path.join(RAW, 'ai_reasons.json'), null);
+  if (reasonsDoc) writeJson(path.join(OUT, 'ai_reasons.json'), reasonsDoc);
+  const aiLog = updateLog(readJson(path.join(PREV, 'ai_log.json'), null), predDoc?.date, preds);
+  writeJson(path.join(OUT, 'ai_log.json'), aiLog);
+  writeJson(path.join(OUT, 'ai_track.json'), { updatedAt: now.toISOString(), ...evaluateLog(aiLog, history, Object.fromEntries(Object.entries(meta).map(([k, v]) => [k, v.name]))) });
 
   // 4) スクリーナー（地合いフィルターは検証で逆効果だったため、score には反映しない。penalty は参考値）
   const details = {};

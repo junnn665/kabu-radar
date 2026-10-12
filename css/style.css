@@ -276,7 +276,7 @@ button.wide { width: 100%; margin-top: 10px; }
 .ai-chip { font-family: "JetBrains Mono", monospace; font-size: 12px; font-weight: 600; padding: 1px 6px; border-radius: 6px; background: var(--panel2); white-space: nowrap; }
 .aipred { display: grid; gap: 2px; background: linear-gradient(135deg, rgba(56, 189, 248, 0.10), rgba(192, 132, 252, 0.06)); border: 1px solid #38bdf844; border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; }
 .aipred b { font-size: 22px; }
-.aipred span { font-size: 13px; }
+.aipred .aipos { font-size: 13px; }
 .aipred small { font-size: 11px; }
 .decile { display: grid; grid-template-columns: 54px 1fr 64px; gap: 6px; align-items: center; font-size: 12px; margin: 3px 0; }
 .decile .bar { height: 12px; position: relative; background: var(--grid); border-radius: 3px; }
@@ -285,3 +285,15 @@ button.wide { width: 100%; margin-top: 10px; }
 .decile .bar i.neg { right: 50%; background: var(--down); }
 .imp { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; }
 .imp span { background: var(--panel2); border-radius: 6px; padding: 2px 8px; }
+
+.reasons { display: grid; gap: 3px; margin: 6px 0 2px; }
+.reasons .rs { display: flex; gap: 8px; font-size: 12px; align-items: baseline; }
+.reasons .rs b { min-width: 56px; text-align: right; }
+.reasons .rs.pos b { color: var(--accent); }
+.reasons .rs.neg b { color: var(--down); }
+.csv-row { display: grid; gap: 4px; margin-bottom: 12px; }
+.csv-row small { font-size: 11px; }
+input.mprice { width: 90px; padding: 4px 6px; text-align: right; }
+
+.aipred .reasons span { font-size: 12px; color: var(--text); }
+.aipred .reasons .rs b { font-size: 13px; }

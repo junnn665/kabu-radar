@@ -119,7 +119,7 @@ jobs:
         if: steps.fetch.outcome == 'success'
         run: |
           mkdir -p state
-          for f in paper paper_ai ai notified events news fundamentals universe screener meta backtest review market model; do
+          for f in paper paper_ai ai ai_log ai_track notified events news fundamentals universe screener meta backtest review market model; do
             [ -f "data/$f.json" ] && cp "data/$f.json" state/
           done
           cd state

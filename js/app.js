@@ -7,6 +7,7 @@ import { drawChart, sparkline, fmt } from './chart.js';
 import { levels, holdingLevels } from './levels.js';
 import { marketOf } from './market.js';
 import { computeReview } from './review.js';
+import { decodeCsv, parseCsvText, extractHoldings } from './csvimport.js';
 
 const DEFAULT_REPO = 'junnn665/kabu-radar';
 
@@ -120,11 +121,11 @@ const rowOf = (s) => state.rowBySym?.get(s) || null;
 const fundaOf = (s) => rowOf(s);
 const eventsOf = (s) => rowOf(s)?.events || null;
 const newsOf = (s) => state.server.news?.news?.[s] || [];
-const nameOf = (s) => state.universe?.get(s)?.name || state.quotes[s]?.name || s;
+const nameOf = (s) => state.universe?.get(s)?.name || state.quotes[s]?.name || state.settings.holdings.find((h) => h.sym === s && h.name)?.name || s;
 
 async function loadServer() {
   if (!state.provider.static) { state.server = {}; return; }
-  const files = ['screener', 'backtest', 'paper', 'paper_ai', 'news', 'ai', 'meta', 'market', 'review', 'model'];
+  const files = ['screener', 'backtest', 'paper', 'paper_ai', 'news', 'ai', 'meta', 'market', 'review', 'model', 'ai_reasons', 'ai_track'];
   if (!state.universe) {
     try {
       const u = await state.provider.json('universe.json', { fresh: true });
@@ -143,7 +144,7 @@ async function loadCandles(symbols) {
     try {
       state.candles[s] = await state.provider.getDailyCandles(s);
     } catch (e) {
-      if (!state.provider.unavailable) toast(`${s}: ${e.message}`, 'err');
+      if (!state.provider.unavailable && !state.settings.holdings.some((h) => h.sym === s)) toast(`${s}: ${e.message}`, 'err');
       state.candles[s] = [];
     }
     delete state.symStats[s];
@@ -411,7 +412,9 @@ function renderPicks() {
           <div class="evs">${eventChips(s)}</div>
           ${levelLine(s, true)}
           <div class="pick-score">${useAI() && a.ai ? `<span class="mono">${a.ai.pred > 0 ? '+' : ''}${a.ai.pred.toFixed(1)}%</span><small>AI予測</small>` : `<span class="mono">${a.score}</span><small>/100</small>`}</div>
-          <ul>${a.signals.filter((x) => x.weight > 0).slice(0, 3).map((x) => `<li>${esc(x.label)}</li>`).join('')}</ul>
+          <ul>${useAI() && state.server.ai_reasons?.reasons?.[s]
+            ? state.server.ai_reasons.reasons[s].filter((r) => r[1] > 0).slice(0, 2).map(([k, , v]) => `<li>${esc(FEATURE_JA[k] || k)}${reasonValue(k, v) ? `：${esc(reasonValue(k, v))}` : ''}</li>`).join('')
+            : a.signals.filter((x) => x.weight > 0).slice(0, 3).map((x) => `<li>${esc(x.label)}</li>`).join('')}</ul>
         </button>`;
       }).join('')
     : `<p class="empty">ウォッチリストに条件を満たす銘柄はありません。<a href="#" data-goto="screener">スクリーナー</a>で全銘柄から探せます。</p>`;
@@ -467,10 +470,11 @@ function renderDetail() {
         <small class="bt">${[statLine(ss?.stats[x.id], 'この銘柄:'), statLine(us?.stats[x.id], '全銘柄:')].filter(Boolean).join(' ／ ') || '過去データ不足'}</small></div></li>`).join('')
     : '<li class="muted">目立ったシグナルはありません</li>';
   const mr = state.server.model?.report;
-  $('#d-aipred').innerHTML = a?.ai ? `<div class="aipred ${sign(a.ai.pred)}">
+  $('#d-aipred').innerHTML = a?.ai ? `<div class="aipred">
       <small>AI予測（5営業日後・市場平均との差）</small>
-      <b class="mono">${a.ai.pred > 0 ? '+' : ''}${a.ai.pred.toFixed(2)}%</b>
-      <span>${a.ai.rank != null ? `売買代金のある銘柄の中で${topPct(a.ai.rank)}` : '売買代金が少ないため順位の対象外'}</span>
+      <b class="mono ${sign(a.ai.pred)}">${a.ai.pred > 0 ? '+' : ''}${a.ai.pred.toFixed(2)}%</b>
+      <span class="aipos">${a.ai.rank != null ? `売買代金のある銘柄の中で${topPct(a.ai.rank)}` : '売買代金が少ないため順位の対象外'}</span>
+      ${reasonsHtml(s)}
       ${mr?.top2pct ? `<small class="muted">このモデルの上位2%は、学習に使っていない期間で平均${pctf(mr.top2pct.excess, 2)}・勝率${Math.round(mr.top2pct.win * 100)}%（${mr.from}〜）</small>` : ''}
     </div>` : '';
   $('#d-score').innerHTML = a ? `シグナル点数 <b class="mono">${a.score}</b> ・ <span class="badge ${a.verdict.key}">${a.verdict.label}</span>${useAI() && a.ai ? '<small class="muted pen">判定はAI予測の順位で表示中（設定で変更）</small>' : ''}`
@@ -676,20 +680,24 @@ const money = (v, cur) => (cur === 'USD' ? `$${fmt(v)}` : `¥${Math.round(v).toL
 
 function holdingView(h) {
   const cs = state.candles[h.sym], q = state.quotes[h.sym], a = state.analyses[h.sym];
-  const price = q?.price ?? cs?.at(-1)?.close ?? null;
+  const manual = !(q?.price ?? cs?.at(-1)?.close) && h.manualPrice > 0;
+  const price = q?.price ?? cs?.at(-1)?.close ?? (h.manualPrice > 0 ? h.manualPrice : null);
   const cur = marketOf(h.sym) === 'JP' ? 'JPY' : 'USD';
   const value = price != null ? price * h.shares : null;
   const pnl = price != null ? (price - h.cost) * h.shares : null;
   const lv = cs?.length ? holdingLevels(cs, h.cost) : null;
   const warns = [];
+  // 売り時：AI予測が下位（今後5日で市場平均に負けそう）なら売り候補。下位2%は検証で平均−3%
+  const ai = aiOf(h.sym);
+  if (ai?.rank != null && ai.rank <= 0.1) warns.push({ hot: ai.rank <= 0.05, sell: true, text: `AI売り候補（${topPct(ai.rank)}・${ai.pred > 0 ? '+' : ''}${ai.pred.toFixed(1)}%予測）` });
   if (a) {
-    if (a.score <= -30) warns.push({ hot: true, text: `売りシグナル（スコア${a.score}）` });
-    for (const x of a.signals) if (['dead_cross', 'macd_down', 'rsi_overbought', 'vol_surge_down'].includes(x.id)) warns.push({ text: x.label });
+    if (a.score <= -20) warns.push({ hot: true, text: `売りシグナル（点数${a.score}）` });
+    for (const x of a.signals) if (['dead_cross', 'trend_break', 'short_overbought', 'vol_surge_down', 'bb_upper'].includes(x.id)) warns.push({ text: x.label });
   }
   if (lv && price != null && price <= lv.stop) warns.push({ hot: true, text: `損切りライン ${fmt(lv.stop)} 割れ` });
   if (lv && price != null && price >= lv.target) warns.push({ text: `利確目安 ${fmt(lv.target)} 到達` });
   for (const b of eventBadges(h.sym)) if (b.days <= 7) warns.push({ hot: b.days <= 3, text: b.text });
-  return { ...h, price, cur, value, pnl, pnlPct: price != null ? price / h.cost - 1 : null, lv, a, warns };
+  return { ...h, price, manual, cur, value, pnl, pnlPct: price != null ? price / h.cost - 1 : null, lv, a, ai, warns };
 }
 
 function renderHoldings() {
@@ -703,18 +711,39 @@ function renderHoldings() {
       <div><small>評価額（円換算）</small><b>¥${Math.round(jpyAll).toLocaleString('ja-JP')}</b>${tot.USD.v && fx ? `<small>ドル円 ${fx.toFixed(2)} で換算</small>` : ''}</div>
       <div><small>含み損益</small><b class="${sign(jpyAll - jpyCost)}">${yen(jpyAll - jpyCost)}</b><small>${pctf(jpyCost ? jpyAll / jpyCost - 1 : null)}</small></div>
       <div><small>要注意</small><b class="${list.some((h) => h.warns.some((w) => w.hot)) ? 'down' : ''}">${list.filter((h) => h.warns.length).length}銘柄</b></div>
+      <div><small>AIの売り候補</small><b class="${list.some((h) => h.warns.some((w) => w.sell)) ? 'down' : ''}">${list.filter((h) => h.warns.some((w) => w.sell)).length}銘柄</b><small>予測が下位10%</small></div>
     </div>${unpriced.length ? `<p class="warn">${unpriced.map((h) => esc(h.sym)).join('・')} は株価を取得できないため、合計に含めていません。</p>` : ''}
     <p class="muted small">損益は「（最新の終値 − 登録した買値）× 株数」です。証券会社の表示と合わない場合は、登録した買値（1株あたりの平均取得単価）と株数を確認してください。手数料・税金は含みません。</p>` : '';
   $('#hold-rows').innerHTML = list.length ? list.map((h) => `<tr data-sym="${esc(h.sym)}">
       <td><div class="sym">${esc(h.sym)}</div><div class="nm">${esc(nameOf(h.sym))}</div><div class="nm show-sm mono">${h.shares.toLocaleString()}株 @${fmt(h.cost)}</div>${h.a ? `<span class="badge ${h.a.verdict.key}">${h.a.verdict.label}</span>` : ''}</td>
       <td class="num small hide-sm"><div class="mono">${h.shares.toLocaleString()}株</div><div class="mono muted">@${fmt(h.cost)}</div></td>
-      <td class="num"><div class="mono">${fmt(h.price)}</div><div class="mono small">${h.value != null ? money(h.value, h.cur) : ''}</div></td>
+      <td class="num">${h.price != null ? `<div class="mono">${fmt(h.price)}${h.manual ? '<small class="muted">手入力</small>' : ''}</div>` : `<input class="mprice" type="number" step="any" inputmode="decimal" placeholder="現在値" data-mprice="${esc(h.id)}" />`}
+        <div class="mono small">${h.value != null ? money(h.value, h.cur) : ''}</div>${h.ai ? `<div>${aiLabel(h.ai)}</div>` : ''}</td>
       <td class="num ${sign(h.pnl)}"><div class="mono">${h.pnl != null ? (h.pnl >= 0 ? '+' : '−') + money(Math.abs(h.pnl), h.cur) : '—'}</div><div class="mono small">${pctf(h.pnlPct)}</div></td>
       <td class="hide-sm small">${h.lv ? `<div>損切り <b class="mono">${fmt(h.lv.stop)}</b></div><div>利確 <b class="mono">${fmt(h.lv.target)}</b></div>` : ''}</td>
       <td class="small warns">${h.warns.length ? h.warns.map((w) => `<span class="ev ${w.hot ? 'hot' : ''}">${esc(w.text)}</span>`).join(' ') : '<span class="muted">—</span>'}
         <div><button class="mini ghost" data-del-hold="${esc(h.id)}">削除</button></div></td>
     </tr>`).join('')
-    : '<tr><td colspan="6" class="muted">まだ登録がありません。上のフォームから、持っている株のコード・株数・買値を入れてください。</td></tr>';
+    : '<tr><td colspan="6" class="muted">まだ登録がありません。上のフォームか「CSVから取り込む」で登録してください。</td></tr>';
+}
+
+// ---------- 証券会社CSVの取り込み ----------
+async function importCsv(file) {
+  try {
+    const { holdings, skipped } = extractHoldings(parseCsvText(decodeCsv(await file.arrayBuffer())));
+    if (!holdings.length) { toast('CSVから株式の保有が見つかりませんでした（SBI証券は「ポートフォリオ」→「CSVダウンロード」のファイルを選んでください）', 'err'); return; }
+    const list = holdings.map((h) => `${h.sym} ${h.name || nameOf(h.sym)}：${h.shares.toLocaleString()}株 @${fmt(h.cost)}${h.accounts?.length > 1 ? '（口座合算）' : ''}`).join('\n');
+    const replace = confirm(`${holdings.length}銘柄が見つかりました。\n\n${list}\n\n「OK」で今の保有株と入れ替え、「キャンセル」で追加（同じ銘柄は上書き）します。`);
+    const prev = replace ? [] : state.settings.holdings.filter((h) => !holdings.some((x) => x.sym === h.sym));
+    const manual = Object.fromEntries(state.settings.holdings.map((h) => [h.sym, h.manualPrice]));
+    state.settings.holdings = [...prev, ...holdings.map((h, i) => ({ id: `${Date.now().toString(36)}${i}`, sym: h.sym, name: h.name || undefined, shares: h.shares, cost: h.cost, date: todayJst(), manualPrice: manual[h.sym] }))];
+    store.save(state.settings);
+    loadCandles(state.settings.holdings.map((h) => h.sym).filter((s) => !state.candles[s])).then(tick);
+    render();
+    toast(`${holdings.length}銘柄を取り込みました${skipped ? `（${skipped}行は読み取れませんでした）` : ''}`);
+  } catch (e) {
+    toast(`CSVを読み込めませんでした: ${e.message}`, 'err');
+  }
 }
 
 // 保有株の警告は1日1回だけ通知
@@ -725,7 +754,7 @@ function checkHoldings() {
   for (const h of state.settings.holdings.map(holdingView)) {
     for (const w of h.warns.filter((x) => x.hot)) {
       const key = `${h.sym}:${w.text}`;
-      if (sent.keys.includes(key)) continue;
+      if (sent.keys.includes(key) || sent.keys.some((k) => k.startsWith(`${h.sym}:AI売り候補`) && key.startsWith(`${h.sym}:AI売り候補`))) continue;
       sent.keys.push(key);
       notify(`保有株: ${nameOf(h.sym)}`, w.text);
     }
@@ -734,12 +763,33 @@ function checkHoldings() {
 }
 
 // ---------- 答え合わせ ----------
+function aiTrackSection() {
+  const t = state.server.ai_track;
+  if (!t?.days?.length) return '<h3>AI予測の答え合わせ（本番）</h3><p class="muted small">毎日のAI予測を記録しています。5営業日たつと、ここに実際の成績が出ます。</p>';
+  const T = t.total;
+  return `<h3>AI予測の答え合わせ（本番の記録）</h3>
+    <p class="muted small">実際に公開したAI予測の上位${Math.round(t.topPct * 100)}%（売買代金1億円以上）を、${t.horizon}営業日後の値動きで採点しています。学習時の検証ではなく、本番の成績です。</p>
+    <div class="kpis">
+      <div><small>上位${Math.round(t.topPct * 100)}%の市場平均との差</small><b class="${sign(T.topExcess)}">${T.days ? pctf(T.topExcess, 2) : '集計中'}</b><small>${T.days}日分・${T.topN}銘柄・勝率${T.topWin != null ? Math.round(T.topWin * 100) + '%' : '—'}</small></div>
+      <div><small>下位${Math.round(t.topPct * 100)}%</small><b class="${sign(T.bottomExcess)}">${T.days ? pctf(T.bottomExcess, 2) : '—'}</b></div>
+      <div><small>予測と結果の相関（IC）</small><b>${T.ic != null ? T.ic.toFixed(3) : '—'}</b><small>${T.icPositive != null ? `プラスの日 ${Math.round(T.icPositive * 100)}%` : ''}</small></div>
+    </div>
+    ${t.days.slice(0, 20).map((d) => `<details class="week">
+      <summary><b>${+d.date.slice(5, 7)}/${+d.date.slice(8, 10)}の予測</b>
+        ${d.top ? `<span class="mono ${sign(d.top.excess)}">${pctf(d.top.excess, 2)}</span><span class="muted">${d.done ? `勝率${Math.round(d.top.win * 100)}%・IC ${d.ic != null ? d.ic.toFixed(2) : '—'}` : `途中経過 ${d.elapsed}日目`}</span>` : '<span class="muted">結果待ち</span>'}</summary>
+      ${d.picks?.length ? `<div class="table-wrap"><table><thead><tr><th>銘柄</th><th class="num">予測</th><th class="num">実際</th><th class="num">市場差</th></tr></thead><tbody>
+        ${d.picks.map((p) => `<tr data-scr="${esc(p.sym)}"><td><div class="sym">${esc(p.sym)}</div><div class="nm">${esc(p.name)}</div></td>
+          <td class="num mono">${p.pred > 0 ? '+' : ''}${p.pred.toFixed(2)}%</td><td class="num mono ${sign(p.ret)}">${pctf(p.ret)}</td><td class="num mono ${sign(p.ex)}">${pctf(p.ex)}</td></tr>`).join('')}
+      </tbody></table></div>` : ''}</details>`).join('')}
+    <h3>シグナル点数「強い買い」の答え合わせ</h3>`;
+}
+
 function renderReview() {
   const rv = state.server.review || state.local.review;
   if (!rv) { $('#review-body').innerHTML = '<p class="muted">計算中…</p>'; return; }
   const box = (st, label) => `<div><small>${label}</small><b class="${sign(st.avg)}">${pctf(st.avg, 2)}</b><small>勝率${st.win != null ? Math.round(st.win * 100) + '%' : '—'}・指数に勝った${st.beat != null ? Math.round(st.beat * 100) + '%' : '—'}</small></div>`;
-  $('#review-body').innerHTML = `
-    <p class="muted small">各営業日に「強い買いシグナル」（${state.server.review ? '地合いフィルター込み・' : ''}${rv.threshold}点以上）だった銘柄を、その後${rv.horizon}営業日の値動きで採点しています。${state.server.review ? '比較対象はTOPIX（連動ETF）。売買代金1億円未満の銘柄は除外。' : 'デモデータです。'}</p>
+  $('#review-body').innerHTML = `${state.server.model ? aiTrackSection() : ''}
+    <p class="muted small">各営業日に「強い買いシグナル」（${rv.threshold}点以上）だった銘柄を、その後${rv.horizon}営業日の値動きで採点しています。${state.server.review ? '比較対象はTOPIX（連動ETF）。売買代金1億円未満の銘柄は除外。' : 'デモデータです。'}</p>
     <div class="kpis">
       <div><small>直近8週の件数</small><b>${rv.total.n}</b><small>結果確定 ${rv.total.done}件</small></div>
       ${box(rv.total, '平均リターン（5日後）')}
@@ -765,6 +815,36 @@ const FEATURE_JA = {
   body: 'ローソク足の実体', lshadow: '下ヒゲ', updays5: '直近5日の上昇日数', lprice: '株価の水準', seg: '市場区分', sector: '業種',
   n225_ret5: '日経平均の5日の値動き', n225_dev25: '日経平均の25日線乖離', vix: 'VIX（米国の不安指数）',
 };
+
+// 判断理由の値を、人が読める形にする（モデルの入力は対数や比率なので変換する）
+function reasonValue(k, v) {
+  if (v == null) return '';
+  const rd = state.server.ai_reasons;
+  const p = (x, d = 1) => `${x > 0 ? '+' : ''}${(x * 100).toFixed(d)}%`;
+  switch (k) {
+    case 'ret1': case 'ret5': case 'ret20': case 'ret60': return p(Math.exp(v) - 1);
+    case 'dev5': case 'dev25': case 'dev75': case 'slope75': case 'gap': case 'dist250': return p(v);
+    case 'rsi2': case 'rsi14': return v.toFixed(0);
+    case 'bbz': return `${v > 0 ? '+' : ''}${v.toFixed(1)}σ`;
+    case 'volr': return `${Math.exp(v).toFixed(1)}倍`;
+    case 'lturn': { const yen = 10 ** v; return yen >= 1e10 ? `${(yen / 1e8).toFixed(0)}億円` : `${(yen / 1e8).toFixed(1)}億円`; }
+    case 'atrp': case 'vol20': return `${(v * 100).toFixed(1)}%`;
+    case 'pos60': return `${Math.round(v * 100)}%の位置`;
+    case 'body': case 'lshadow': return `${Math.round(v * 100)}%`;
+    case 'updays5': return `${v.toFixed(0)}日`;
+    case 'lprice': return `${Math.round(10 ** v).toLocaleString()}円`;
+    case 'seg': return ['プライム', 'スタンダード', 'グロース', 'その他'][v] || '';
+    case 'sector': return rd?.sectors?.[v] || '';
+    default: return String(Math.round(v * 100) / 100);
+  }
+}
+
+function reasonsHtml(s) {
+  const rs = state.server.ai_reasons?.reasons?.[s];
+  if (!rs?.length) return '';
+  return `<div class="reasons"><small class="muted">AIの判断理由（予測を押し上げ／押し下げた要因）</small>
+    ${rs.map(([k, c, v]) => `<div class="rs ${c >= 0 ? 'pos' : 'neg'}"><b class="mono">${c >= 0 ? '+' : ''}${c.toFixed(2)}%</b><span>${esc(FEATURE_JA[k] || k)}${reasonValue(k, v) ? `：${esc(reasonValue(k, v))}` : ''}</span></div>`).join('')}</div>`;
+}
 
 function aiModelSection() {
   const m = state.server.model;
@@ -953,6 +1033,18 @@ document.addEventListener('click', (e) => {
   store.save(state.settings);
   render();
 }, true);
+$('#csv-btn').addEventListener('click', () => $('#csv-file').click());
+$('#csv-file').addEventListener('change', (e) => { const f = e.target.files[0]; if (f) importCsv(f); e.target.value = ''; });
+document.addEventListener('change', (e) => {
+  const inp = e.target.closest('[data-mprice]');
+  if (!inp) return;
+  const h = state.settings.holdings.find((x) => x.id === inp.dataset.mprice);
+  if (!h) return;
+  h.manualPrice = parseFloat(inp.value) || null;
+  store.save(state.settings);
+  render();
+});
+document.addEventListener('click', (e) => { if (e.target.closest('[data-mprice]')) e.stopPropagation(); }, true);
 $('#scr-funda').addEventListener('change', (e) => { state.scr.funda = e.target.value; renderScreener(); });
 $('#d-close').addEventListener('click', () => { state.selected = null; render(); });
 $('#d-ai-btn').addEventListener('click', askAi);

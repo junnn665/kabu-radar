@@ -326,6 +326,21 @@ def main():
     rank_by = dict(zip(liq["sym"].astype(str), ranks))
     out = {str(s): [round(float(p) * 100, 3), round(float(rank_by[str(s)]), 4) if str(s) in rank_by else None]
            for s, p in zip(last["sym"].astype(str), last["pred"]) if math.isfinite(float(p))}
+    # 判断理由：各入力が予測をどれだけ押し上げ／押し下げたか（SHAP 寄与度、単位は%ポイント）。売買代金のある銘柄だけ
+    reasons = {}
+    if len(liq):
+        contrib = model.predict(liq[cols], pred_contrib=True)  # 最後の列は全銘柄共通の基準値
+        base = float(contrib[0, -1]) * 100 if len(contrib) else 0.0
+        vals = liq[cols].to_numpy()
+        for sym, row, v in zip(liq["sym"].astype(str), contrib[:, :-1], vals):
+            order = np.argsort(row)
+            ups = [i for i in order[::-1][:3] if row[i] > 0]
+            downs = [i for i in order[:2] if row[i] < 0]
+            reasons[sym] = [[cols[i], round(float(row[i]) * 100, 3), None if not math.isfinite(float(v[i])) else round(float(v[i]), 4)] for i in ups + downs]
+        meta_reason = {"base": round(base, 3), "sectors": sectors, "segs": ["P", "S", "G", "X"]}
+    else:
+        meta_reason = {}
+    dump({"date": str(df["date"].max()), "reasons": reasons, **meta_reason}, os.path.join(args.out, "ai_reasons.json"))
     meta = load(meta_path, {})
     dump({"date": str(df["date"].max()), "model": meta, "report": report, "preds": out}, os.path.join(args.out, "predictions.json"))
     print(f"予測 {len(out):,}銘柄（{time.time() - t0:.0f}s）", json.dumps({k: report[k] for k in ("ic", "top2pct")} if report else {}, ensure_ascii=False))
