@@ -159,7 +159,7 @@ async function main() {
   const useClaude = !!process.env.ANTHROPIC_API_KEY;
   const useGithub = !useClaude && !!process.env.GITHUB_TOKEN && process.env.AI_PROVIDER !== 'none';
   const aiOn = useClaude || useGithub;
-  let aiFailures = 0;
+  let aiFailures = 0, aiError = null;
   if (aiOn) {
     for (const r of rows.filter((x) => x.score >= 20).slice(0, 5)) {
       const key = `${jstDate}:${[...r.ids].sort().join(',')}`;
@@ -178,6 +178,7 @@ async function main() {
         if (text) ai[r.sym] = { key, date: jstDate, text, source: useClaude ? 'Claude' : 'GitHub Models', generatedAt: now.toISOString() };
       } catch (e) {
         aiFailures++;
+        aiError = e.message;
         console.warn(`AI ${r.sym}:`, e.message);
       }
     }
@@ -213,7 +214,7 @@ async function main() {
   writeJson(path.join(OUT, 'notified.json'), notified);
 
   writeJson(path.join(OUT, 'meta.json'), {
-    updatedAt: now.toISOString(), symbols: syms.length, ai: aiOn ? (useClaude ? 'Claude' : 'GitHub Models') : false, ntfy: !!process.env.NTFY_TOPIC,
+    updatedAt: now.toISOString(), symbols: syms.length, ai: aiOn ? (useClaude ? 'Claude' : 'GitHub Models') : false, aiError, ntfy: !!process.env.NTFY_TOPIC,
     eventsDate: eventsDoc.date || null,
   });
   console.log(`built ${syms.length} symbols; strong=${rows.filter((r) => r.score >= 40).length}; paper open=${paper.open.length} (+${opened.length}/-${closedNow.length})`);
