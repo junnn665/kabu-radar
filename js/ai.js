@@ -67,7 +67,9 @@ export async function explainGithub({ token, model = GH_MODEL_DEFAULT, ctx }) {
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j?.error?.message || j?.message || `HTTP ${r.status}`);
-  return (j.choices?.[0]?.message?.content || '').trim();
+  const text = (j.choices?.[0]?.message?.content || '').trim();
+  if (!text) throw new Error(`空の応答: ${JSON.stringify(j).slice(0, 300)}`);
+  return text;
 }
 
 // Claude アプリで聞くための質問文（コピー＆貼り付け用）
