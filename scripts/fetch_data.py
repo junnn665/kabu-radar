@@ -14,6 +14,10 @@ import math
 import os
 import sys
 import time
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
 
 import yfinance as yf
 
@@ -108,6 +112,34 @@ def parse_news(items):
     return out[:6]
 
 
+def google_news(u):
+    """Google ニュースの RSS から見出しを取得（日本株は日本語、米国株は英語）。"""
+    if u.get("market") == "JP":
+        q, params = f"{u['name']} 株", "hl=ja&gl=JP&ceid=JP:ja"
+    else:
+        q, params = f"{u['name']} stock", "hl=en-US&gl=US&ceid=US:en"
+    url = f"https://news.google.com/rss/search?q={urllib.parse.quote(q + ' when:7d')}&{params}"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (kabu-radar)"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        root = ET.fromstring(r.read())
+    out = []
+    for item in root.iter("item"):
+        title = item.findtext("title") or ""
+        src = item.find("source")
+        publisher = src.text if src is not None else None
+        if publisher and title.endswith(" - " + publisher):
+            title = title[: -len(publisher) - 3]
+        when = item.findtext("pubDate")
+        try:
+            when = parsedate_to_datetime(when).isoformat() if when else None
+        except (TypeError, ValueError):
+            pass
+        out.append({"title": title, "publisher": publisher, "link": item.findtext("link"), "time": when})
+        if len(out) >= 6:
+            break
+    return out
+
+
 def fetch_events_and_news(universe, today):
     events, news = {}, {}
     for u in universe:
@@ -131,11 +163,17 @@ def fetch_events_and_news(universe, today):
             except Exception as e:  # noqa: BLE001
                 print(f"dividends {u['yf']}: {e}", file=sys.stderr)
         events[u["sym"]] = ev
+        items = []
         try:
-            news[u["sym"]] = parse_news(t.news)
+            items = google_news(u)
         except Exception as e:  # noqa: BLE001
-            print(f"news {u['yf']}: {e}", file=sys.stderr)
-            news[u["sym"]] = []
+            print(f"google news {u['yf']}: {e}", file=sys.stderr)
+        if not items:
+            try:
+                items = parse_news(t.news)
+            except Exception as e:  # noqa: BLE001
+                print(f"yahoo news {u['yf']}: {e}", file=sys.stderr)
+        news[u["sym"]] = items
         time.sleep(0.4)
     return events, news
 
@@ -170,7 +208,8 @@ def main():
         json.dump(events_doc, f, ensure_ascii=False)
     with open(os.path.join(args.out, "news.json"), "w", encoding="utf-8") as f:
         json.dump(news_doc, f, ensure_ascii=False)
-    print(f"history: {len(history)}/{len(universe)} symbols, events date {events_doc.get('date')}")
+    with_news = sum(1 for v in news_doc.get("news", {}).values() if v)
+    print(f"history: {len(history)}/{len(universe)} symbols, events date {events_doc.get('date')}, news for {with_news} symbols")
 
 
 if __name__ == "__main__":
