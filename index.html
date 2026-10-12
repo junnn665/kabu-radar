@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Kabu Radar — 株価監視＆狙い目サジェスト</title>
+  <meta name="description" content="ウォッチリストの株価をリアルタイムで監視し、テクニカル指標から狙い目銘柄をサジェストします。" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand"><span class="logo">◎</span> KABU RADAR</div>
+    <div class="meta">
+      <span id="status" class="dot"></span>
+      <span class="mono" id="updated">—</span>
+      <span class="chip" id="provider">…</span>
+      <button id="open-settings" class="icon-btn" aria-label="設定">⚙</button>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <h2>今日の狙い目 <small>スコア20以上を自動抽出</small></h2>
+      <div id="picks" class="picks"></div>
+    </section>
+
+    <section>
+      <div class="sec-head">
+        <h2>ウォッチリスト</h2>
+        <form id="add-form" class="add">
+          <input id="add-sym" placeholder="銘柄コード（例: AAPL, 7203）" autocomplete="off" />
+          <button>追加</button>
+        </form>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>銘柄</th><th class="num">現在値</th><th class="num">前日比</th><th class="hide-sm">30日</th><th>スコア</th><th>判定</th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="detail" class="detail" hidden>
+      <div class="d-head">
+        <div>
+          <h2 id="d-title"></h2>
+          <div id="d-price"></div>
+        </div>
+        <button id="d-close" class="icon-btn" aria-label="閉じる">✕</button>
+      </div>
+      <canvas id="chart"></canvas>
+      <div class="legend"><i class="l5"></i>5日 <i class="l25"></i>25日 <i class="l75"></i>75日 <i class="lbb"></i>ボリンジャー±2σ</div>
+      <div class="d-grid">
+        <div>
+          <h3 id="d-score"></h3>
+          <ul id="d-signals" class="signals"></ul>
+        </div>
+        <div class="alerts">
+          <h3>価格アラート</h3>
+          <label>上抜けで通知 <input id="al-above" type="number" step="any" inputmode="decimal" /></label>
+          <label>下抜けで通知 <input id="al-below" type="number" step="any" inputmode="decimal" /></label>
+          <button id="al-save">保存</button>
+          <button id="d-remove" class="ghost danger">ウォッチリストから外す</button>
+        </div>
+      </div>
+    </section>
+
+    <p class="disclaimer">本サイトの判定はテクニカル指標を機械的に採点したもので、投資助言ではありません。売買の判断はご自身の責任で行ってください。デモモードの値はシミュレーションです。</p>
+  </main>
+
+  <dialog id="settings">
+    <form method="dialog">
+      <h2>設定</h2>
+      <label>データ取得元
+        <select id="s-provider">
+          <option value="demo">デモ（シミュレーション・キー不要）</option>
+          <option value="twelvedata">Twelve Data（米国株・無料APIキー）</option>
+        </select>
+      </label>
+      <label>APIキー <input id="s-key" type="password" autocomplete="off" placeholder="twelvedata.com で無料取得" /></label>
+      <label>更新間隔（秒） <input id="s-interval" type="number" min="2" /></label>
+      <small class="muted">Twelve Data 無料枠は1分8リクエストのため、60秒以上に自動調整されます。</small>
+      <label>上昇の色
+        <select id="s-up"><option value="green">緑（欧米式）</option><option value="red">赤（日本式）</option></select>
+      </label>
+      <button id="s-notify" class="ghost">ブラウザ通知を許可する</button>
+      <div class="row">
+        <button id="s-cancel" class="ghost">キャンセル</button>
+        <button id="s-save">保存して再接続</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toasts"></div>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
