@@ -183,6 +183,13 @@ async function main() {
       }
     }
   }
+  if (useGithub && aiError) {
+    try {
+      const r = await fetch('https://models.github.ai/catalog/models', { headers: { authorization: `Bearer ${process.env.GITHUB_TOKEN}`, accept: 'application/json', 'x-github-api-version': '2022-11-28' } });
+      const t = await r.text();
+      aiError += ` || catalog HTTP ${r.status} ${r.headers.get('content-type')}: ${t.slice(0, 200)}`;
+    } catch (e) { aiError += ` || catalog: ${e.message}`; }
+  }
   writeJson(path.join(OUT, 'ai.json'), ai);
 
   // 6) スマホ通知（ntfy）
