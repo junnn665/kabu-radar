@@ -41,7 +41,8 @@ JPX_LIST_FALLBACK = [
 ]
 JPX_EARNINGS = "https://www.jpx.co.jp/listing/event-schedules/financial-announcement/index.html"
 MARKET = [("N225", "^N225"), ("TOPIX", "1306.T"), ("SPX", "^GSPC"), ("VIX", "^VIX"), ("USDJPY", "JPY=X")]
-KEEP_BARS = 260
+KEEP_BARS = 760          # 約3年（AI予測モデルの学習用。サイトに出す日足は直近260本）
+ALL_EVERY_MIN = 14       # 日中、全銘柄を取り直す間隔（分）。それ以外は売買の多い銘柄だけ
 SEG = {"プライム": "P", "スタンダード": "S", "グロース": "G"}
 DIAG = {"errors": []}
 
@@ -346,9 +347,11 @@ def main():
     bars = {s: v for s, v in cache.get("bars", {}).items() if s in valid}
     divs = cache.get("divs", {})
     full = args.force_daily or cache.get("full_date") != today.isoformat() or len(bars) < len(symbols) * 0.5
+    now_ts = time.time()
+    tier = "full"
 
     if full:
-        got = download(list(by_yf), "13mo")
+        got = download(list(by_yf), "3y")
         fresh = 0
         for t, sub in got.items():
             b, dv = frame_to_bars(sub)
@@ -358,22 +361,33 @@ def main():
                 fresh += 1
         full_date = today.isoformat() if fresh > len(symbols) * 0.7 else cache.get("full_date")
     else:
-        got = download(list(by_yf), "5d")
+        # 日中：前回の全件取得から14分以上たっていれば全銘柄、そうでなければ売買代金のある銘柄と注目銘柄だけ（速さ優先）
+        everything = now_ts - cache.get("last_all_ts", 0) >= ALL_EVERY_MIN * 60
+        targets = list(by_yf)
+        if not everything:
+            prev_rows = load_json(os.path.join(args.prev, "screener.json"), {}).get("rows", [])
+            active = {r["sym"] for r in prev_rows if r.get("liquid") or (r.get("score") or 0) >= 20 or (r.get("aiRank") or 0) >= 0.95}
+            active |= {u["sym"] for u in symbols if u.get("seg") == "X"}
+            if active:
+                targets = [t for t in by_yf if by_yf[t] in active]
+        tier = "all" if len(targets) == len(by_yf) else "active"
+        got = download(targets, "5d")
         for t, sub in got.items():
             b, _ = frame_to_bars(sub)
             bars[by_yf[t]] = trim(merge_bars(bars.get(by_yf[t]), b))
         missing = [u["yf"] for u in symbols if u["sym"] not in bars or len(bars[u["sym"]]["d"]) < 30]
         if missing:  # 新しく増えた銘柄は1年分
-            for t, sub in download(missing, "13mo").items():
+            for t, sub in download(missing, "3y").items():
                 b, dv = frame_to_bars(sub)
                 if b["d"]:
                     bars[by_yf[t]], divs[by_yf[t]] = trim(b), dv
         full_date = cache.get("full_date")
     if not bars:
         sys.exit("株価を1銘柄も取得できませんでした")
-    save_json(os.path.join(args.cache, "history.json.gz"), {"full_date": full_date, "bars": bars, "divs": divs}, gz=True)
+    last_all = now_ts if tier in ("full", "all") else cache.get("last_all_ts", 0)
+    save_json(os.path.join(args.cache, "history.json.gz"), {"full_date": full_date, "last_all_ts": last_all, "bars": bars, "divs": divs}, gz=True)
     save_json(os.path.join(args.out, "history.json"), bars)
-    DIAG["history"] = {"mode": "full" if full else "intraday", "symbols": len(bars), "fetched": len(got), "universe": len(symbols)}
+    DIAG["history"] = {"mode": "full" if full else "intraday", "tier": tier, "symbols": len(bars), "fetched": len(got), "universe": len(symbols)}
 
     # 指数
     market = {}

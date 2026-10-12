@@ -83,6 +83,7 @@
 
         <div class="d-grid">
           <div>
+            <div id="d-aipred"></div>
             <h3 id="d-score"></h3>
             <div id="d-levels"></div>
             <ul id="d-signals" class="signals"></ul>
@@ -110,10 +111,10 @@
           <select id="scr-seg"><option value="all">全市場</option><option value="P">プライム</option><option value="S">スタンダード</option><option value="G">グロース</option></select>
           <select id="scr-sector"><option value="all">全業種</option></select>
           <select id="scr-min">
-            <option value="40">強い買いシグナルのみ</option>
-            <option value="20" selected>注目以上</option>
-            <option value="0">0点以上</option>
-            <option value="-100">すべて</option>
+            <option value="3">強い買いのみ</option>
+            <option value="2" selected>注目以上</option>
+            <option value="1">警戒以外</option>
+            <option value="0">すべて</option>
           </select>
           <select id="scr-funda">
             <option value="all">財務条件なし</option>
@@ -161,7 +162,11 @@
     <!-- ペーパートレード -->
     <div id="view-paper" class="view" hidden>
       <section>
-        <h2>ペーパートレード（実運用ログ） <small>サジェスト通りに機械的に売買した場合の記録</small></h2>
+        <h2>AI予測の仮想口座 <small>AIの予測通りに機械的に売買した記録</small></h2>
+        <div id="paper-ai"></div>
+      </section>
+      <section>
+        <h2>シグナル点数の仮想口座 <small>点数30以上を機械的に売買した記録</small></h2>
         <div id="paper-live"></div>
       </section>
       <section>
@@ -186,7 +191,7 @@
       </section>
     </div>
 
-    <p class="disclaimer">株価ハックの判定・解説は過去データにもとづく機械的なもので、投資助言ではありません。売買の判断はご自身の責任で行ってください。株価は取引時間中15分ごとの更新で、約20分遅れです。</p>
+    <p class="disclaimer">株価ハックの判定・解説は過去データにもとづく機械的なもので、投資助言ではありません。売買の判断はご自身の責任で行ってください。株価は取引時間中5分ごと（全銘柄は約15分ごと）の更新で、データ元の都合で約20分遅れです。</p>
   </main>
 
   <dialog id="settings">
@@ -197,7 +202,7 @@
         <legend>データ</legend>
         <label>取得元
           <select id="s-provider">
-            <option value="auto">東証全銘柄（15分更新・約20分遅れ）</option>
+            <option value="auto">東証全銘柄（5分更新・約20分遅れ）</option>
             <option value="demo">デモ（シミュレーション）</option>
           </select>
         </label>
@@ -205,7 +210,14 @@
 
       <fieldset>
         <legend>シグナルの配点</legend>
-        <label>配点モード
+        <label>判定方式
+          <select id="s-method">
+            <option value="auto">自動（検証で成績が良い方）</option>
+            <option value="ai">AI予測（学習モデル）</option>
+            <option value="points">シグナル点数</option>
+          </select>
+        </label>
+        <label>配点モード（シグナル点数）
           <select id="s-wmode">
             <option value="base">標準</option>
             <option value="tuned">自動チューニング（過去成績から調整）</option>

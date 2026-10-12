@@ -1,5 +1,5 @@
 import { makeProvider, DemoProvider, DEMO_SYMBOLS } from './providers.js';
-import { analyze, scoreOf, verdictOf, SIGNALS, SIGNAL_MAP, BASE_WEIGHTS, STYLES, applyStyle } from './signals.js';
+import { analyze, scoreOf, verdictOf, SIGNALS, SIGNAL_MAP, BASE_WEIGHTS, STYLES, applyStyle, VERDICTS } from './signals.js';
 import { signalStats, tuneWeights, simulate, tradeSummary, DEFAULT_RULES } from './backtest.js';
 import { explain, chatPrompt, AI_MODELS, AI_MODEL_DEFAULT } from './ai.js';
 import { ruleExplain } from './explain.js';
@@ -26,6 +26,7 @@ const DEFAULTS = {
   tab: 'watch',
   holdings: [],       // [{ id, sym, shares, cost, date }]
   marketFilter: false, // 地合いフィルター（検証で逆効果だったため標準はオフ）
+  method: 'auto',      // 判定方式：'auto'（検証成績が良い方）| 'ai'（AI予測）| 'points'（シグナル点数）
   v: 3,
 };
 const store = {
@@ -56,7 +57,7 @@ const state = {
   local: {},         // デモ等でブラウザ内計算したもの
   symStats: {},      // 銘柄別バックテストのキャッシュ
   aiBusy: false,
-  scr: { seg: 'all', sector: 'all', min: 20, q: '', funda: 'all', liquid: true, limit: 100 },
+  scr: { seg: 'all', sector: 'all', min: 2, q: '', funda: 'all', liquid: true, limit: 100 },
   universe: null,    // 自動取得の対象銘柄（config/universe.json）
 };
 
@@ -81,6 +82,27 @@ function rawWeights() {
 const W = () => applyStyle(rawWeights(), state.settings.style);
 const universeStats = () => state.server.backtest || state.local.bt || null;
 
+// ================= AI予測 =================
+// 判定方式が「AI予測」で、その銘柄の予測があるとき使う。順位は売買代金1億円以上の銘柄の中での位置（1=最上位）
+// 「自動」のときは、学習に使っていない期間で市場平均を上回った幅が大きい方を使う
+function aiIsBetter() {
+  const ai = state.server.model?.report?.top2pct, pts = state.server.backtest?.walkForward?.base;
+  if (ai?.excess == null) return false;
+  return pts?.excess == null || ai.excess > pts.excess;
+}
+const useAI = () => !!state.server.model?.report && (state.settings.method === 'ai' || (state.settings.method !== 'points' && aiIsBetter()));
+const aiOf = (s) => { const r = rowOf(s); return r?.pred != null ? { pred: r.pred, rank: r.aiRank } : null; };
+function aiVerdict(rank) {
+  if (rank == null) return VERDICTS.find((v) => v.key === 'neutral');
+  if (rank >= 0.98) return VERDICTS[0];
+  if (rank >= 0.95) return VERDICTS[1];
+  if (rank <= 0.05) return VERDICTS[3];
+  return VERDICTS[2];
+}
+const LEVEL = { strong: 3, watch: 2, neutral: 1, caution: 0 };
+const topPct = (rank) => (rank == null ? '' : rank >= 0.995 ? '上位0.5%' : rank >= 0.5 ? `上位${Math.max(1, Math.round((1 - rank) * 100))}%` : `下位${Math.max(1, Math.round(rank * 100))}%`);
+const aiLabel = (ai) => (ai ? `<span class="ai-chip ${sign(ai.pred)}">AI ${ai.pred > 0 ? '+' : ''}${ai.pred.toFixed(2)}%</span>` : '');
+
 // ================= 地合い =================
 const regimeOf = (mkt) => state.server.market?.regime?.[mkt] || null;
 const penaltyFor = (s) => (state.settings.marketFilter ? regimeOf(marketOf(s))?.penalty || 0 : 0);
@@ -102,7 +124,7 @@ const nameOf = (s) => state.universe?.get(s)?.name || state.quotes[s]?.name || s
 
 async function loadServer() {
   if (!state.provider.static) { state.server = {}; return; }
-  const files = ['screener', 'backtest', 'paper', 'news', 'ai', 'meta', 'market', 'review'];
+  const files = ['screener', 'backtest', 'paper', 'paper_ai', 'news', 'ai', 'meta', 'market', 'review', 'model'];
   if (!state.universe) {
     try {
       const u = await state.provider.json('universe.json', { fresh: true });
@@ -174,7 +196,10 @@ function mergeQuote(s, q) {
 }
 
 function recompute(s) {
-  const a = withRegime(analyze(state.candles[s], W()), s);
+  let a = withRegime(analyze(state.candles[s], W()), s);
+  const ai = aiOf(s);
+  if (ai) a = { ...a, ai };
+  if (useAI() && ai) a = { ...a, verdict: aiVerdict(ai.rank) };
   state.analyses[s] = a;
   const prev = state.prevVerdict[s];
   if (prev && prev !== 'strong' && a.verdict.key === 'strong') {
@@ -373,8 +398,8 @@ function renderPicks() {
   const ranked = state.settings.watchlist
     .filter((s) => state.analyses[s])
     .map((s) => ({ s, a: state.analyses[s] }))
-    .filter(({ a }) => a.score >= 20)
-    .sort((x, y) => y.a.score - x.a.score)
+    .filter(({ a }) => LEVEL[a.verdict.key] >= 2)
+    .sort((x, y) => (useAI() ? (y.a.ai?.pred ?? -99) - (x.a.ai?.pred ?? -99) : y.a.score - x.a.score))
     .slice(0, 4);
   $('#picks').innerHTML = ranked.length
     ? ranked.map(({ s, a }) => {
@@ -385,7 +410,7 @@ function renderPicks() {
           <div class="pick-price mono">${fmt(q?.price)} <span class="${sign(q?.changePct)}">${pct(q?.changePct)}</span></div>
           <div class="evs">${eventChips(s)}</div>
           ${levelLine(s, true)}
-          <div class="pick-score"><span class="mono">${a.score}</span><small>/100</small></div>
+          <div class="pick-score">${useAI() && a.ai ? `<span class="mono">${a.ai.pred > 0 ? '+' : ''}${a.ai.pred.toFixed(1)}%</span><small>AI予測</small>` : `<span class="mono">${a.score}</span><small>/100</small>`}</div>
           <ul>${a.signals.filter((x) => x.weight > 0).slice(0, 3).map((x) => `<li>${esc(x.label)}</li>`).join('')}</ul>
         </button>`;
       }).join('')
@@ -407,7 +432,7 @@ function renderTable() {
       <td class="mono num ${flash}">${fmt(q?.price)}</td>
       <td class="mono num ${sign(q?.changePct)}">${pct(q?.changePct)}</td>
       <td class="hide-sm">${spark}</td>
-      <td>${a && !failed ? meter(a.score) + `<div class="show-sm"><span class="badge ${a.verdict.key}">${a.verdict.label}</span></div>` : ''}</td>
+      <td>${a && !failed ? (useAI() && a.ai ? aiLabel(a.ai) : meter(a.score)) + `<div class="show-sm"><span class="badge ${a.verdict.key}">${a.verdict.label}</span></div>` : ''}</td>
       <td class="hide-sm">${failed ? '<span class="muted">取得不可</span>' : a ? `<span class="badge ${a.verdict.key}">${a.verdict.label}</span>` : '<span class="muted">読込中</span>'}</td>
     </tr>`;
   }).join('');
@@ -441,7 +466,14 @@ function renderDetail() {
     ? a.signals.map((x) => `<li class="${x.weight > 0 ? 'pos' : 'neg'}"><b class="mono">${x.weight > 0 ? '+' : ''}${x.weight}</b><div><strong>${esc(x.label)}</strong><small>${esc(x.detail)}</small>
         <small class="bt">${[statLine(ss?.stats[x.id], 'この銘柄:'), statLine(us?.stats[x.id], '全銘柄:')].filter(Boolean).join(' ／ ') || '過去データ不足'}</small></div></li>`).join('')
     : '<li class="muted">目立ったシグナルはありません</li>';
-  $('#d-score').innerHTML = a ? `総合スコア <b class="mono">${a.score}</b> ・ <span class="badge ${a.verdict.key}">${a.verdict.label}</span>`
+  const mr = state.server.model?.report;
+  $('#d-aipred').innerHTML = a?.ai ? `<div class="aipred ${sign(a.ai.pred)}">
+      <small>AI予測（5営業日後・市場平均との差）</small>
+      <b class="mono">${a.ai.pred > 0 ? '+' : ''}${a.ai.pred.toFixed(2)}%</b>
+      <span>${a.ai.rank != null ? `売買代金のある銘柄の中で${topPct(a.ai.rank)}` : '売買代金が少ないため順位の対象外'}</span>
+      ${mr?.top2pct ? `<small class="muted">このモデルの上位2%は、学習に使っていない期間で平均${pctf(mr.top2pct.excess, 2)}・勝率${Math.round(mr.top2pct.win * 100)}%（${mr.from}〜）</small>` : ''}
+    </div>` : '';
+  $('#d-score').innerHTML = a ? `シグナル点数 <b class="mono">${a.score}</b> ・ <span class="badge ${a.verdict.key}">${a.verdict.label}</span>${useAI() && a.ai ? '<small class="muted pen">判定はAI予測の順位で表示中（設定で変更）</small>' : ''}`
     + (a.penalty ? `<small class="muted pen">地合いで −${a.penalty}点（元 ${a.rawScore}点）</small>` : '') : '';
   $('#d-levels').innerHTML = levelLine(s) + fundaLine(s)
     + (levels(state.candles[s]) ? `<small class="muted">損切りは普段の値幅(ATR)の2倍下、利確は3倍上の目安です。</small>` : '');
@@ -523,7 +555,8 @@ function screenerRows() {
   return rows.map((r) => {
     const pen = penaltyFor(r.sym);
     const score = Math.max(-100, scoreOf(r.ids, w) - pen);
-    return { ...r, score, penalty: pen, verdict: verdictOf(score) };
+    const verdict = useAI() && r.pred != null ? aiVerdict(r.liquid ? r.aiRank : null) : verdictOf(score);
+    return { ...r, score, penalty: pen, verdict };
   });
 }
 
@@ -538,10 +571,10 @@ function renderScreener() {
     .filter((r) => f.seg === 'all' || r.seg === f.seg)
     .filter((r) => f.sector === 'all' || r.sector === f.sector)
     .filter((r) => !f.liquid || r.liquid !== false)
-    .filter((r) => r.score >= f.min)
+    .filter((r) => LEVEL[r.verdict.key] >= f.min)
     .filter((r) => !q || r.sym.toLowerCase().includes(q) || r.name.toLowerCase().includes(q))
     .filter((r) => FUNDA_FILTERS[f.funda].test(r))
-    .sort((a, b) => b.score - a.score);
+    .sort((a, b) => (useAI() ? (b.pred ?? -99) - (a.pred ?? -99) : b.score - a.score));
   const shown = rows.slice(0, f.limit);
   $('#scr-count').textContent = `${rows.length.toLocaleString()}件${rows.length > shown.length ? `（上位${shown.length}件を表示）` : ''}`;
   $('#scr-more').hidden = rows.length <= shown.length;
@@ -551,7 +584,7 @@ function renderScreener() {
         return `<tr data-scr="${esc(r.sym)}">
           <td><div class="sym">${esc(r.sym)} ${r.seg ? `<span class="mk">${{ P: 'プ', S: 'ス', G: 'グ' }[r.seg] || ''}</span>` : ''}${r.liquid === false ? '<span class="mk thin">薄商い</span>' : ''}</div><div class="nm">${esc(r.name)}</div><div class="evs">${eventChips(r.sym)}</div></td>
           <td class="mono num">${fmt(r.price)}<div class="${sign(r.changePct)} small">${pct(r.changePct)}</div></td>
-          <td>${meter(r.score)}<div><span class="badge ${r.verdict.key}">${r.verdict.label}</span></div></td>
+          <td>${useAI() && r.pred != null ? `${aiLabel({ pred: r.pred })}<div class="nm">${r.liquid ? topPct(r.aiRank) : '順位対象外'}</div>` : meter(r.score)}<div><span class="badge ${r.verdict.key}">${r.verdict.label}</span></div></td>
           <td class="small fnd"><div>PER ${r.per != null ? r.per.toFixed(1) : '—'}</div><div>PBR ${r.pbr != null ? r.pbr.toFixed(2) : '—'}</div><div>利回り ${r.divYield != null ? (r.divYield * 100).toFixed(1) + '%' : '—'}</div></td>
           <td class="hide-sm small">${r.ids.map((id) => esc(SIGNAL_MAP[id].label)).join('、') || '—'}</td>
           <td><button class="mini ${inList ? 'ghost' : ''}" data-add="${esc(r.sym)}">${inList ? '✓' : '＋'}<span class="hide-sm">${inList ? '登録済' : '監視'}</span></button></td>
@@ -570,7 +603,28 @@ const FUNDA_FILTERS = {
 };
 
 // ---------- ペーパートレード ----------
+function paperBlock(p, rulesText) {
+  const closed = p.closed || [];
+  const realized = closed.reduce((a, t) => a + t.ret * p.notional, 0);
+  const unreal = (p.open || []).reduce((a, t) => a + (t.ret || 0) * p.notional, 0);
+  const wins = closed.filter((t) => t.ret > 0).length;
+  return `<p class="muted small">${rulesText}</p>
+    <div class="kpis">
+      <div><small>運用開始</small><b>${esc(p.startedAt)}</b></div>
+      <div><small>確定損益</small><b class="${sign(realized)}">${yen(realized)}</b></div>
+      <div><small>含み損益</small><b class="${sign(unreal)}">${yen(unreal)}</b></div>
+      <div><small>勝率</small><b>${closed.length ? `${Math.round((wins / closed.length) * 100)}%` : '—'}</b><small>${closed.length}回決済</small></div>
+    </div>
+    <h3>保有中（${p.open.length}）</h3>
+    ${tradeTable(p.open, true)}
+    <h3>決済済み</h3>
+    ${tradeTable(closed.slice(0, 50), false)}`;
+}
+
 function renderPaper() {
+  const pa = state.server.paper_ai;
+  $('#paper-ai').innerHTML = pa ? paperBlock(pa, 'AI予測の上位1%（売買代金1億円以上）を1回¥100,000分ずつ買い、+10%利確・−5%損切り・最長5営業日で売ります。')
+    : '<p class="muted">AI予測のデータができると記録が始まります。</p>';
   const p = state.server.paper;
   if (p) {
     const closed = p.closed || [];
@@ -704,6 +758,39 @@ function renderReview() {
 }
 
 // ---------- バックテスト ----------
+const FEATURE_JA = {
+  ret1: '前日比', ret5: '5日の値動き', ret20: '20日の値動き', ret60: '60日の値動き', dev5: '5日線との乖離', dev25: '25日線との乖離',
+  dev75: '75日線との乖離', slope75: '75日線の傾き', rsi2: 'RSI(2)', rsi14: 'RSI(14)', bbz: 'ボリンジャー内の位置', volr: '出来高の増え方',
+  lturn: '売買代金', atrp: '1日の値幅', vol20: '値動きの荒さ', pos60: '60日の高安内の位置', dist250: '52週高値からの距離', gap: '窓（寄り付きの跳び）',
+  body: 'ローソク足の実体', lshadow: '下ヒゲ', updays5: '直近5日の上昇日数', lprice: '株価の水準', seg: '市場区分', sector: '業種',
+  n225_ret5: '日経平均の5日の値動き', n225_dev25: '日経平均の25日線乖離', vix: 'VIX（米国の不安指数）',
+};
+
+function aiModelSection() {
+  const m = state.server.model;
+  const r = m?.report;
+  if (!r) return '<p class="muted small">AI予測モデルの検証結果は、毎朝の学習後に表示されます。</p>';
+  const maxAbs = Math.max(...r.deciles.map((d) => Math.abs(d.excess)), 1e-6);
+  const strong = state.server.backtest?.walkForward?.base;
+  return `
+    <h3>AI予測モデル（LightGBM）の成績 <small class="muted">学習に使っていない期間 ${esc(r.from)}〜${esc(r.to)}</small></h3>
+    <p class="muted small">毎朝、約3年分・全銘柄のデータで「5営業日後に市場平均をどれだけ上回るか」を学習。検証では20営業日ごとに、その時点で分かっていたデータだけで学び直して次の期間を予測しています。最新の学習：${esc(m.model?.trainedAt?.slice(0, 16).replace('T', ' ') || '—')}（${(m.model?.rows || 0).toLocaleString()}件）</p>
+    <div class="kpis">
+      <div><small>予測上位2%（市場平均との差）</small><b class="${sign(r.top2pct.excess)}">${pctf(r.top2pct.excess, 2)}</b><small>${r.top2pct.n.toLocaleString()}回・勝率${Math.round(r.top2pct.win * 100)}%</small></div>
+      <div><small>毎日の上位10銘柄</small><b class="${sign(r.top[0].excess)}">${pctf(r.top[0].excess, 2)}</b><small>勝率${Math.round(r.top[0].win * 100)}%・平均${pctf(r.top[0].avg, 2)}</small></div>
+      <div><small>予測下位2%</small><b class="${sign(r.bottom2pct.excess)}">${pctf(r.bottom2pct.excess, 2)}</b><small>${r.bottom2pct.n.toLocaleString()}回</small></div>
+      <div><small>予測と結果の相関（IC）</small><b>${r.ic.toFixed(3)}</b><small>プラスの日 ${Math.round(r.icPositiveDays * 100)}%</small></div>
+      ${strong?.n ? `<div><small>参考：シグナル点数30以上</small><b class="${sign(strong.excess)}">${pctf(strong.excess, 2)}</b><small>${strong.n.toLocaleString()}回・勝率${Math.round(strong.win * 100)}%</small></div>` : ''}
+    </div>
+    <h3>予測の強さ別（10段階）の実際の成績</h3>
+    ${r.deciles.slice().reverse().map((d) => `<div class="decile"><span>${d.decile === 10 ? '最上位' : d.decile === 1 ? '最下位' : `第${d.decile}段階`}</span>
+      <div class="bar"><i class="${d.excess >= 0 ? 'pos' : 'neg'}" style="width:${(Math.abs(d.excess) / maxAbs) * 50}%"></i></div>
+      <span class="mono ${sign(d.excess)}">${pctf(d.excess, 2)}</span></div>`).join('')}
+    <p class="muted small">上の段階ほど成績が良く、下ほど悪ければ、モデルが銘柄の良し悪しを見分けられています。</p>
+    ${m.model?.importance ? `<h3>予測でよく使われている情報</h3><div class="imp">${m.model.importance.slice(0, 10).map(([k, v]) => `<span>${esc(FEATURE_JA[k] || k)} ${Math.round(v * 100)}%</span>`).join('')}</div>` : ''}
+    <h3>シグナル点数方式の成績</h3>`;
+}
+
 function renderBacktest() {
   const bt = universeStats();
   if (!bt) { $('#bt-body').innerHTML = '<p class="muted">計算中…</p>'; return; }
@@ -715,7 +802,7 @@ function renderBacktest() {
   const exc = (st) => (st?.excess != null ? `<b class="${sign(st.excess)}">${pctf(st.excess, 2)}</b>` : '<b>—</b>');
   const kpi = (label, st) => `<div><small>${label}</small>${exc(st)}<small>${st?.n ? `${st.n.toLocaleString()}回・勝率${Math.round(st.win * 100)}%・平均${pctf(st.avg, 2)}` : 'なし'}</small></div>`;
   const cell = (st) => (st?.n ? `<td class="num mono">${st.n.toLocaleString()}</td><td class="num mono">${Math.round(st.win * 100)}%</td><td class="num mono ${sign(st.excess ?? st.avg)}">${pctf(st.excess ?? st.avg, 2)}</td>` : '<td class="num muted">0</td><td></td><td></td>');
-  $('#bt-body').innerHTML = `
+  $('#bt-body').innerHTML = `${aiModelSection()}
     <p class="muted small">対象: ${src}。シグナルが出た日の終値で買い、5営業日後の終値と比べています。大きな数字は<b>市場平均との差</b>（同じ日の全銘柄の平均を引いた値）で、銘柄選びの腕前を表します。</p>
     <div class="kpis">
       ${kpi('「強い買い」の日（市場平均との差）', bt.byVerdict.strong)}
@@ -892,6 +979,7 @@ function openSettings() {
   $('#s-provider').value = st.provider;
   $('#s-up').value = st.upColor;
   $('#s-wmode').value = st.weightMode;
+  $('#s-method').value = st.method || 'auto';
   $('#s-style').innerHTML = Object.entries(STYLES).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('');
   $('#s-style').value = st.style;
   $('#s-aimodel').innerHTML = AI_MODELS.map((m) => `<option value="${m.id}">${m.label}</option>`).join('');
@@ -913,6 +1001,7 @@ $('#s-save').addEventListener('click', (e) => {
     provider: $('#s-provider').value,
     upColor: $('#s-up').value,
     weightMode: $('#s-wmode').value,
+    method: $('#s-method').value,
     style: $('#s-style').value,
     aiKey: $('#s-aikey').value.trim(),
     aiModel: $('#s-aimodel').value,

@@ -11,8 +11,8 @@ on:
         type: boolean
         default: false
   schedule:
-    - cron: '7,22,37,52 0-6 * * 1-5'  # 東証の取引時間（JST 9:07〜15:52、15分おき）
-    - cron: '3 22 * * 0-4'            # 平日の朝 JST 7:03（全件取り直し・決算予定日・財務・ニュース）
+    - cron: '2-59/5 0-6 * * 1-5'      # 東証の取引時間（JST 9:02〜15:57、5分おき。全銘柄は約15分おき）
+    - cron: '3 21 * * 0-4'            # 平日の朝 JST 6:03（3年分の取り直し・AI予測モデルの学習・決算予定日・財務・ニュース）
 
 permissions:
   contents: write   # data ブランチへの保存
@@ -27,7 +27,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
 
@@ -53,13 +53,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
 
       - name: 株価・決算予定日・財務・ニュースを取得
         id: fetch
         continue-on-error: true
         run: |
           set -o pipefail
-          pip install --quiet yfinance pandas xlrd openpyxl 2>&1 | tail -3
+          pip install --quiet -r requirements.txt 2>&1 | tail -3
           python scripts/fetch_data.py --prev prev --cache cache --out raw ${{ inputs.force_daily && '--force-daily' || '' }} 2>&1 | tee fetch.log
           echo "::notice title=取得結果::$(tail -n 1 fetch.log)"
 
@@ -67,8 +69,27 @@ jobs:
         if: steps.fetch.outcome != 'success'
         run: echo "::error title=取得エラー::$(tail -c 1500 fetch.log 2>/dev/null | tr '\n' '|')"
 
-      - name: 日足キャッシュを保存
+      - name: AI予測（朝は学習と検証も）
+        id: model
         if: steps.fetch.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          TRAIN=$(python -c "import json;m=json.load(open('raw/fetch_meta.json'));print('--train' if m['history']['mode']=='full' else '')")
+          python scripts/model.py --history raw/history.json --universe raw/universe.json --market raw/market.json --cache cache --out raw $TRAIN 2>&1 | tee model.log
+          echo "::notice title=AI予測::$(tail -n 1 model.log)"
+
+      - name: AI予測のエラーを表示
+        if: steps.model.outcome == 'failure'
+        run: echo "::warning title=AI予測エラー::$(tail -c 1500 model.log 2>/dev/null | tr '\n' '|')"
+
+      - name: キャッシュを保存するか（全銘柄を取り直した回だけ）
+        id: tier
+        if: steps.fetch.outcome == 'success'
+        run: echo "save=$(python -c "import json;m=json.load(open('raw/fetch_meta.json'));print('yes' if m['history']['tier']!='active' else 'no')")" >> "$GITHUB_OUTPUT"
+
+      - name: 日足キャッシュを保存
+        if: steps.fetch.outcome == 'success' && steps.tier.outputs.save == 'yes'
         uses: actions/cache/save@v4
         with:
           path: cache
@@ -90,7 +111,7 @@ jobs:
         if: steps.fetch.outcome == 'success'
         run: |
           mkdir -p state
-          for f in paper ai notified events news fundamentals universe screener meta backtest review market; do
+          for f in paper paper_ai ai notified events news fundamentals universe screener meta backtest review market model; do
             [ -f "data/$f.json" ] && cp "data/$f.json" state/
           done
           cd state

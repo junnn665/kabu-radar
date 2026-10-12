@@ -31,7 +31,8 @@ test('build_data generates all files and keeps paper-trade state between runs', 
   fs.writeFileSync(path.join(raw, 'fundamentals.json'), JSON.stringify({ date: 'x', fundamentals: { [uni[0].sym]: { per: 12.3, pbr: 0.9, divYield: 0.035 } } }));
   fs.writeFileSync(path.join(raw, 'news.json'), JSON.stringify({ date: 'x', news: { [uni[0].sym]: [{ title: 'テスト' }] } }));
 
-  const run = (prev, out) => execFileSync('node', ['scripts/build_data.mjs', '--raw', raw, '--prev', prev, '--out', out], {
+  fs.writeFileSync(path.join(raw, 'predictions.json'), JSON.stringify({ date: 'x', model: { trainedAt: 'x' }, report: { ic: 0.03 }, preds: { [uni[0].sym]: [1.23, 0.995], [uni[1].sym]: [-0.5, 0.1] } }));
+  const run = (prev, out, extra = []) => execFileSync('node', ['scripts/build_data.mjs', '--raw', raw, '--prev', prev, '--out', out, ...extra], {
     cwd: root, env: { ...process.env, ANTHROPIC_API_KEY: '', NTFY_TOPIC: '', AI_PROVIDER: 'none' }, encoding: 'utf8',
   });
   run(path.join(tmp, 'none'), out1);
@@ -61,7 +62,14 @@ test('build_data generates all files and keeps paper-trade state between runs', 
   assert.equal(p1.open.length, Math.min(strongNow, 8));
   assert.ok(scr.rows.every((r) => ['P', 'S', 'G'].includes(r.seg)));
 
-  run(out1, out2); // 2回目：同じ価格なら二重に買わない
+  assert.equal(first.pred, 1.23);
+  assert.equal(first.aiRank, 0.995);
+  const pai = read(path.join(out1, 'paper_ai.json'));
+  assert.ok(pai.open.length <= 1 && pai.open.every((p) => p.sym === uni[0].sym));
+  assert.ok(read(path.join(out1, 'model.json')).report.ic === 0.03);
+
+  run(out1, out2, ['--mode', 'intraday']); // 2回目（日中）：重い計算は使い回し、同じ価格なら二重に買わない
+  assert.equal(read(path.join(out2, 'backtest.json')).updatedAt, bt.updatedAt);
   const p2 = read(path.join(out2, 'paper.json'));
   assert.equal(p2.startedAt, p1.startedAt);
   assert.equal(p2.open.length + p2.closed.length, p1.open.length + p1.closed.length);

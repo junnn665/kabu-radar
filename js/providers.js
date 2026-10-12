@@ -84,7 +84,7 @@ export class DemoProvider {
 // ---------- GitHub Actions が生成した静的データ（東証全銘柄・取引時間中15分ごと・約20分遅延） ----------
 export class StaticProvider {
   constructor(base = 'data') {
-    this.name = '東証全銘柄（15分更新）';
+    this.name = '東証全銘柄（5分更新）';
     this.base = base;
     this.live = false;
     this.static = true;

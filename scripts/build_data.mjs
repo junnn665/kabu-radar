@@ -20,6 +20,9 @@ const RAW = args.raw || 'raw', PREV = args.prev || 'prev', OUT = args.out || 'da
 const NOTIONAL = 100000;
 const MAX_NEW_PAPER = 8;    // 1回の更新で新しく買う上限
 const MAX_OPEN_PAPER = 30;  // 同時に持つ上限
+const PUBLISH_BARS = 260;   // サイトに出す日足（学習用には約3年分を持っている）
+// AI予測で売買する仮想口座のルール（予測期間が5営業日なので最長5日）
+const AI_RULES = { entryRank: 0.99, hold: 5, takeProfit: 0.1, stopLoss: -0.05, maxNew: 5, maxOpen: 20 };
 
 const readJson = (p, d) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return d; } };
 const writeJson = (p, v) => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, JSON.stringify(v)); };
@@ -70,6 +73,10 @@ async function main() {
   const market = readJson(path.join(RAW, 'market.json'), {});
   const fundaDoc = readJson(path.join(RAW, 'fundamentals.json'), { fundamentals: {} });
   const fetchMeta = readJson(path.join(RAW, 'fetch_meta.json'), null);
+  // 重い計算（3年分のバックテスト・答え合わせ）は朝の全件取得のときだけ。日中は前回の結果を使い回す
+  const MODE = args.mode || (fetchMeta?.history?.mode === 'intraday' ? 'intraday' : 'daily');
+  const predDoc = readJson(path.join(RAW, 'predictions.json'), null);
+  const preds = predDoc?.preds || {};
   const funda = fundaDoc.fundamentals || {};
   const events = eventsDoc.events || {};
   const news = newsDoc.news || {};
@@ -81,7 +88,7 @@ async function main() {
   const quotes = {};
   for (const s of syms) {
     const cs = history[s];
-    writeJson(path.join(OUT, 'candles', `${s}.json`), fromCandles(cs));
+    writeJson(path.join(OUT, 'candles', `${s}.json`), fromCandles(cs.slice(-PUBLISH_BARS)));
     const last = cs.at(-1), prev = cs.at(-2) || last;
     quotes[s] = [r2(last.close), r2(prev.close), last.volume, last.date];
   }
@@ -105,10 +112,16 @@ async function main() {
   writeJson(path.join(OUT, 'market.json'), { updatedAt: now.toISOString(), indices, regime: regimeNow });
 
   // 3) バックテスト（売買代金1億円以上の日だけ・市場平均との差でも評価）とウォークフォワード学習
+  const prevBt = MODE === 'intraday' ? readJson(path.join(PREV, 'backtest.json'), null) : null;
+  let bt, tuned;
+  if (prevBt?.stats && prevBt?.tuned) {
+    bt = prevBt; tuned = prevBt.tuned;
+    writeJson(path.join(OUT, 'backtest.json'), prevBt);
+  } else {
   const panel = buildPanel(history, { horizon: 5, penaltyOf });
-  const bt = panelStats(panel);
+  bt = panelStats(panel);
   const wf = walkForward(panel, { window: 120, step: 5 });
-  const tuned = wf.weightsNow;
+  tuned = wf.weightsNow;
   const strategy = {};
   const recentTrades = [];
   for (const [mode, w, filt] of [['base', BASE_WEIGHTS, false], ['filtered', BASE_WEIGHTS, true], ['tuned', tuned, false]]) {
@@ -125,9 +138,13 @@ async function main() {
   }
   recentTrades.sort((a, b) => (b.entryDate > a.entryDate ? 1 : -1));
   writeJson(path.join(OUT, 'backtest.json'), {
-    updatedAt: now.toISOString(), symbols: panel.syms.length, days: panel.dates.length, ...bt, tuned, walkForward: { ...wf, weightsNow: undefined },
+    updatedAt: now.toISOString(), symbols: panel.syms.length, days: panel.dates.length, from: panel.dates[0], to: panel.dates.at(-1),
+    ...bt, tuned, walkForward: { ...wf, weightsNow: undefined },
     rules: DEFAULT_RULES, notional: NOTIONAL, strategy, trades: recentTrades.slice(0, 120),
   });
+  }
+  // AI予測モデルの検証結果（学習は朝だけ。日中は同じモデルで予測し直す）
+  writeJson(path.join(OUT, 'model.json'), predDoc ? { date: predDoc.date, model: predDoc.model, report: predDoc.report } : null);
 
   // 4) スクリーナー（地合いフィルターは検証で逆効果だったため、score には反映しない。penalty は参考値）
   const details = {};
@@ -148,6 +165,7 @@ async function main() {
       events: ev.earnings || ev.exDiv ? { earnings: ev.earnings || null, exDiv: ev.exDiv || null, exDivEstimated: !!ev.exDivEstimated } : null,
       per: f.per != null ? r2(f.per) : null, pbr: f.pbr != null ? r2(f.pbr) : null, divYield: f.divYield != null ? Math.round(f.divYield * 10000) / 10000 : null,
       stop: lv ? r2(lv.stop) : null, target: lv ? r2(lv.target) : null,
+      pred: preds[s]?.[0] ?? null, aiRank: preds[s]?.[1] ?? null, // AI予測：5日後の市場平均との差（%）と、売買代金のある銘柄の中での順位（1=最上位）
     };
   }).sort((x, y) => y.score - x.score || (y.turnover || 0) - (x.turnover || 0));
   writeJson(path.join(OUT, 'screener.json'), { updatedAt: now.toISOString(), rows });
@@ -156,9 +174,13 @@ async function main() {
   writeJson(path.join(OUT, 'fundamentals.json'), fundaDoc);
 
   // 5) 答え合わせ（直近40営業日に「強い買い」だった銘柄のその後）
-  const review = computeReview(history, { meta, index: { JP: market.TOPIX || market.N225 }, days: 40 });
-  for (const w of review.weeks) w.picks = w.picks.slice(0, 60);
-  writeJson(path.join(OUT, 'review.json'), { updatedAt: now.toISOString(), ...review });
+  const prevReview = MODE === 'intraday' ? readJson(path.join(PREV, 'review.json'), null) : null;
+  if (prevReview?.weeks) writeJson(path.join(OUT, 'review.json'), prevReview);
+  else {
+    const review = computeReview(history, { meta, index: { JP: market.TOPIX || market.N225 }, days: 40 });
+    for (const w of review.weeks) w.picks = w.picks.slice(0, 60);
+    writeJson(path.join(OUT, 'review.json'), { updatedAt: now.toISOString(), ...review });
+  }
 
   // 6) ペーパートレード（サジェスト通り＝標準配点で機械的に売買）
   const paper = readJson(path.join(PREV, 'paper.json'), null) || {
@@ -198,6 +220,35 @@ async function main() {
   paper.closed = paper.closed.slice(0, 500);
   paper.updatedAt = now.toISOString();
   writeJson(path.join(OUT, 'paper.json'), paper);
+
+  // 6b) AI予測で売買する仮想口座（予測の上位1%を買い、最長5営業日）
+  const paperAI = readJson(path.join(PREV, 'paper_ai.json'), null) || { startedAt: jstDate, notional: NOTIONAL, rules: AI_RULES, open: [], closed: [] };
+  const openedAI = [];
+  if (predDoc) {
+    paperAI.open = paperAI.open.filter((p) => {
+      const cs = history[p.sym];
+      if (!cs) return true;
+      const entryIdx = cs.findIndex((c) => c.date >= p.entryDate);
+      const held = entryIdx < 0 ? 0 : cs.length - 1 - entryIdx;
+      const px = cs.at(-1).close, ret = px / p.entryPrice - 1;
+      Object.assign(p, { lastPrice: px, ret, held });
+      const reason = ret >= AI_RULES.takeProfit ? '利確' : ret <= AI_RULES.stopLoss ? '損切り' : held >= AI_RULES.hold ? '保有期限' : null;
+      if (!reason) return true;
+      paperAI.closed.unshift({ ...p, exitDate: cs.at(-1).date, exitPrice: px, ret, reason, pnl: Math.round(ret * paperAI.notional) });
+      return false;
+    });
+    const held = new Set(paperAI.open.map((p) => p.sym));
+    const cands = rows.filter((r) => r.liquid && r.aiRank >= AI_RULES.entryRank && r.pred > 0 && !held.has(r.sym)
+      && !paperAI.closed.some((c) => c.sym === r.sym && c.exitDate === quotes[r.sym][3])).sort((a, b) => b.pred - a.pred);
+    for (const r of cands) {
+      if (openedAI.length >= AI_RULES.maxNew || paperAI.open.length >= AI_RULES.maxOpen) break;
+      const p = { sym: r.sym, name: r.name, entryDate: quotes[r.sym][3], entryPrice: r.price, pred: r.pred, aiRank: r.aiRank, lastPrice: r.price, ret: 0, held: 0 };
+      paperAI.open.push(p); openedAI.push(p);
+    }
+    paperAI.closed = paperAI.closed.slice(0, 500);
+    paperAI.updatedAt = now.toISOString();
+  }
+  writeJson(path.join(OUT, 'paper_ai.json'), paperAI);
 
   // 7) AI「なぜ今？」解説（売買代金のある上位5銘柄、シグナルの組み合わせが変わった時だけ）
   const ai = Object.fromEntries(Object.entries(prevAi).filter(([, v]) => v.date >= jstDate));
@@ -255,7 +306,8 @@ async function main() {
   writeJson(path.join(OUT, 'meta.json'), {
     updatedAt: now.toISOString(), symbols: syms.length, universe: uniDoc.symbols.length, liquid: rows.filter((r) => r.liquid).length,
     ai: aiOn ? (useClaude ? 'Claude' : 'GitHub Models') : false, aiError, ntfy: !!process.env.NTFY_TOPIC,
-    eventsDate: eventsDoc.date || null, fetch: fetchMeta, buildSeconds: Math.round((Date.now() - t0) / 1000),
+    eventsDate: eventsDoc.date || null, fetch: fetchMeta, buildSeconds: Math.round((Date.now() - t0) / 1000), mode: MODE,
+    model: predDoc ? { date: predDoc.date, trainedAt: predDoc.model?.trainedAt, ic: predDoc.report?.ic ?? null } : null,
   });
   console.log(`built ${syms.length} symbols (${rows.filter((r) => r.liquid).length} liquid); strong=${rows.filter((r) => r.liquid && r.score >= STRONG).length}; paper open=${paper.open.length} (+${opened.length}/-${closedNow.length}); ${Math.round((Date.now() - t0) / 1000)}s`);
 }

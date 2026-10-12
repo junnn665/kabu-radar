@@ -1,0 +1,6 @@
+yfinance
+pandas
+numpy
+xlrd
+openpyxl
+lightgbm
