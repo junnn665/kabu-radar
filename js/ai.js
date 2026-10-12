@@ -64,8 +64,9 @@ export async function explainGithub({ token, model = GH_MODEL_DEFAULT, ctx }) {
   const errors = [];
   for (const ep of GH_ENDPOINTS) {
     try {
-      const r = await fetch(ep.url, {
+      const init = {
         method: 'POST',
+        redirect: 'manual', // リダイレクトで GET に化けないよう、POST のまま自分で追いかける
         headers: {
           'content-type': 'application/json', accept: 'application/json',
           authorization: `Bearer ${token}`, 'x-github-api-version': '2022-11-28',
@@ -75,7 +76,15 @@ export async function explainGithub({ token, model = GH_MODEL_DEFAULT, ctx }) {
           max_tokens: 400,
           messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: buildPrompt(ctx) }],
         }),
-      });
+      };
+      let url = ep.url, r, hops = [];
+      for (let i = 0; i < 4; i++) {
+        r = await fetch(url, init);
+        if (r.status < 300 || r.status >= 400 || !r.headers.get('location')) break;
+        url = new URL(r.headers.get('location'), url).toString();
+        hops.push(`${r.status}→${url}`);
+      }
+      if (hops.length) errors.push(`redirects: ${hops.join(', ')}`);
       const raw = await r.text();
       let j = {};
       try { j = JSON.parse(raw); } catch {}
