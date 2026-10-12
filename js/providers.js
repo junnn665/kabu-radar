@@ -75,6 +75,7 @@ export class DemoProvider {
         price: lastC.close, prevClose: prev, change: lastC.close - prev,
         changePct: ((lastC.close - prev) / prev) * 100, volume: lastC.volume,
         name: DEMO_META[s]?.[0] || s, marketOpen: true,
+        market: /^\d/.test(s) ? 'JP' : 'US', date: lastC.date,
       };
     }
     return res;
@@ -151,7 +152,46 @@ export class TwelveDataProvider {
   }
 }
 
-export function makeProvider(settings) {
+// ---------- GitHub Actions が生成した静的データ（日米80銘柄・約15分ごと・約20分遅延） ----------
+export class StaticProvider {
+  constructor(base = 'data') {
+    this.name = '自動取得データ（日米・15分更新）';
+    this.base = base;
+    this.live = false;
+    this.static = true;
+  }
+
+  async json(file, { fresh = false } = {}) {
+    const r = await fetch(`${this.base}/${file}${fresh ? `?t=${Date.now()}` : ''}`, { cache: fresh ? 'no-store' : 'default' });
+    if (!r.ok) throw new Error(r.status === 404 ? 'データがありません' : `HTTP ${r.status}`);
+    return r.json();
+  }
+
+  async available() {
+    try { this.quotesDoc = await this.json('quotes.json', { fresh: true }); return true; } catch { return false; }
+  }
+
+  async getDailyCandles(symbol) {
+    try {
+      return await this.json(`candles/${encodeURIComponent(symbol)}.json`, { fresh: true });
+    } catch (e) {
+      throw new Error(e.message === 'データがありません' ? '対象外の銘柄です（config/universe.json に追加すると取得されます）' : e.message);
+    }
+  }
+
+  async getQuotes(symbols) {
+    this.quotesDoc = await this.json('quotes.json', { fresh: true });
+    const res = {};
+    for (const s of symbols) if (this.quotesDoc.quotes[s]) res[s] = this.quotesDoc.quotes[s];
+    return res;
+  }
+}
+
+export const DEMO_SYMBOLS = Object.keys(DEMO_META);
+
+export async function makeProvider(settings) {
   if (settings.provider === 'twelvedata' && settings.apiKey) return new TwelveDataProvider(settings.apiKey);
-  return new DemoProvider();
+  if (settings.provider === 'demo') return new DemoProvider();
+  const st = new StaticProvider();
+  return (await st.available()) ? st : new DemoProvider();
 }

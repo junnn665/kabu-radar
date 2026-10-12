@@ -44,10 +44,16 @@ input, select {
 
 header.top {
   position: sticky; top: 0; z-index: 5;
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 12px 16px; background: rgba(11, 15, 20, 0.92); backdrop-filter: blur(8px);
+  background: rgba(11, 15, 20, 0.92); backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--line);
+  padding-top: env(safe-area-inset-top);
 }
+.bar { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px 6px; max-width: 1100px; margin: 0 auto; }
+.tabs { display: flex; gap: 4px; padding: 0 12px; max-width: 1100px; margin: 0 auto; overflow-x: auto; scrollbar-width: none; }
+.tab { background: transparent; color: var(--muted); border-radius: 0; padding: 8px 10px; border-bottom: 2px solid transparent; font-weight: 500; white-space: nowrap; }
+.tab.on { color: var(--text); border-bottom-color: var(--accent); }
+.chip.accent { color: var(--accent); border-color: var(--accent); }
+.chip:empty { display: none; }
 .brand { font-family: "JetBrains Mono", monospace; font-weight: 600; letter-spacing: 0.12em; }
 .logo { color: var(--accent); }
 .meta { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
@@ -155,3 +161,59 @@ dialog .row { display: flex; justify-content: flex-end; gap: 8px; }
 }
 .brand, .meta, .add button, .badge { white-space: nowrap; }
 td:nth-child(5) { white-space: nowrap; }
+
+/* 追加分 */
+.small { font-size: 12px; }
+.mt { margin-top: 18px; }
+button.mini { padding: 4px 10px; font-size: 12px; }
+button:disabled { opacity: 0.5; cursor: default; }
+.empty a { color: var(--accent); }
+.evs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.evs:empty { display: none; }
+.ev { font-size: 10px; color: var(--muted); border: 1px solid var(--line); border-radius: 99px; padding: 0 6px; white-space: nowrap; }
+.ev.hot { color: #111; background: #fb923c; border-color: #fb923c; }
+.warn { border: 1px solid #fb923c66; background: #fb923c14; color: #fdba74; border-radius: 8px; padding: 8px 12px; font-size: 13px; margin-top: 10px; }
+.warn.hot { border-color: #fb923c; }
+.mk { font-size: 10px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; margin-left: 2px; font-weight: 400; }
+.signals small.bt { color: var(--ma25); margin-top: 2px; }
+.ai { background: linear-gradient(135deg, rgba(192, 132, 252, 0.10), rgba(56, 189, 248, 0.06)); border: 1px solid #c084fc44; border-radius: 10px; padding: 12px 14px; margin-bottom: 18px; }
+.ai-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.ai-head h3 { margin: 0; color: #d8b4fe; }
+.ai p { margin: 4px 0; }
+.news { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.news a { color: var(--text); text-decoration: none; }
+.news a:hover { text-decoration: underline; }
+.news small { display: block; color: var(--muted); font-size: 11px; }
+.filters { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.filters select, .filters input { width: auto; flex: 1 1 140px; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.kpis > div { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: grid; }
+.kpis small { color: var(--muted); font-size: 11px; }
+.kpis b { font-family: "JetBrains Mono", monospace; font-size: 18px; }
+.view h3 { margin-top: 16px; }
+td.chg { color: var(--accent); }
+table.trades td { vertical-align: top; }
+dialog { max-height: 90vh; overflow-y: auto; }
+fieldset { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px 12px; display: grid; gap: 10px; margin: 0; }
+legend { color: var(--accent); font-size: 12px; padding: 0 6px; }
+details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.weights { display: grid; gap: 6px; margin-top: 8px; }
+.wrow { display: grid !important; grid-template-columns: 1fr 70px; align-items: center; gap: 8px; }
+.wrow input { padding: 4px 6px; text-align: right; }
+.wrow input:disabled { opacity: 0.6; }
+@media (max-width: 720px) {
+  .tab { padding: 8px 8px; font-size: 13px; }
+  .kpis b { font-size: 16px; }
+}
+
+.show-sm { display: none; }
+#detail { scroll-margin-top: 100px; }
+@media (max-width: 720px) {
+  .show-sm { display: block; margin-top: 4px; }
+  table { font-size: 13px; }
+  button.mini { padding: 4px 8px; }
+}
+@media (max-width: 720px) {
+  th, td { padding: 8px 6px; }
+  .badge { padding: 2px 6px; font-size: 10px; }
+}

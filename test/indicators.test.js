@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { sma, ema, rsi, bollinger, crossWithin } from '../js/indicators.js';
-import { analyze } from '../js/signals.js';
+import { analyze, computeIndicators, signalsAt, scoreOf, applyStyle, BASE_WEIGHTS, SIGNALS } from '../js/signals.js';
+import { signalStats, tuneWeights, simulate, tradeSummary } from '../js/backtest.js';
+import { buildPrompt } from '../js/ai.js';
 import { DemoProvider } from '../js/providers.js';
 
 const near = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} != ${b}`);
@@ -19,8 +21,7 @@ test('ema seeds with sma', () => {
 test('rsi extremes', () => {
   const upOnly = Array.from({ length: 30 }, (_, i) => i + 1);
   assert.equal(rsi(upOnly)[29], 100);
-  const downOnly = upOnly.slice().reverse();
-  near(rsi(downOnly)[29], 0);
+  near(rsi(upOnly.slice().reverse())[29], 0);
 });
 
 test('bollinger on constant series collapses', () => {
@@ -34,13 +35,55 @@ test('crossWithin detects golden cross', () => {
   assert.equal(crossWithin([3, 3, 3], [2, 2, 2], 3), 0);
 });
 
-test('analyze works on demo data and score is bounded', async () => {
-  const p = new DemoProvider();
-  for (const s of ['AAPL', '7203', 'ZZZ']) {
-    const cs = await p.getDailyCandles(s);
-    assert.ok(cs.length > 150);
+const demo = new DemoProvider();
+const series = {};
+for (const s of ['AAPL', 'NVDA', '7203', '6758', 'ZZZ']) series[s] = await demo.getDailyCandles(s);
+
+test('analyze: bounded score, labels, honours weights', () => {
+  for (const cs of Object.values(series)) {
     const a = analyze(cs);
     assert.ok(a.score >= -100 && a.score <= 100);
-    assert.ok(a.verdict.label);
+    a.signals.forEach((x) => assert.ok(x.label && x.id));
+    const zero = Object.fromEntries(SIGNALS.map((s) => [s.id, 0]));
+    assert.equal(analyze(cs, zero).score, 0);
   }
+});
+
+test('signals do not look ahead: evaluating a prefix gives the same result', () => {
+  const cs = series.AAPL;
+  const full = computeIndicators(cs);
+  const i = 150;
+  const prefix = computeIndicators(cs.slice(0, i + 1));
+  assert.deepEqual(signalsAt(full, i), signalsAt(prefix, i));
+});
+
+test('scoreOf clamps', () => {
+  assert.equal(scoreOf(['golden_cross', 'rsi_oversold', 'bb_lower', 'macd_up', 'vol_surge_up', 'breakout', 'uptrend']), 100);
+});
+
+test('style multipliers', () => {
+  const c = applyStyle(BASE_WEIGHTS, 'contrarian');
+  assert.ok(c.rsi_oversold > BASE_WEIGHTS.rsi_oversold);
+  assert.ok(c.golden_cross < BASE_WEIGHTS.golden_cross);
+});
+
+test('backtest stats, tuning and simulation', () => {
+  const bt = signalStats(series);
+  assert.ok(bt.baseline.n > 300);
+  const tuned = tuneWeights(bt);
+  for (const s of SIGNALS) assert.ok(Math.abs(tuned[s.id]) <= 40);
+  const trades = simulate(series.AAPL);
+  for (const t of trades) {
+    assert.ok(t.entryDate < (t.exitDate || '9999'));
+    if (t.reason === '利確') assert.ok(t.ret >= 0.1);
+    if (t.reason === '損切り') assert.ok(t.ret <= -0.05);
+  }
+  const sum = tradeSummary(trades);
+  assert.equal(sum.trades, trades.length);
+});
+
+test('AI prompt contains the essentials', () => {
+  const p = buildPrompt({ sym: '7203', name: 'トヨタ', price: 3000, changePct: 1.2, score: 45, verdict: '強い買いシグナル',
+    signals: [{ label: 'ゴールデンクロス', weight: 25, detail: 'x' }], events: { earnings: '2026-11-05' }, news: [{ title: '新型車' }] });
+  assert.match(p, /トヨタ/); assert.match(p, /ゴールデンクロス/); assert.match(p, /2026-11-05/); assert.match(p, /新型車/);
 });

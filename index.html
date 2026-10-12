@@ -2,9 +2,15 @@
 <html lang="ja">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Kabu Radar — 株価監視＆狙い目サジェスト</title>
-  <meta name="description" content="ウォッチリストの株価をリアルタイムで監視し、テクニカル指標から狙い目銘柄をサジェストします。" />
+  <meta name="description" content="日米の株価を監視し、テクニカル指標・バックテスト・AI解説で狙い目銘柄をサジェストします。" />
+  <meta name="theme-color" content="#0b0f14" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet" />
@@ -12,84 +18,180 @@
 </head>
 <body>
   <header class="top">
-    <div class="brand"><span class="logo">◎</span> KABU RADAR</div>
-    <div class="meta">
-      <span id="status" class="dot"></span>
-      <span class="mono" id="updated">—</span>
-      <span class="chip" id="provider">…</span>
-      <button id="open-settings" class="icon-btn" aria-label="設定">⚙</button>
+    <div class="bar">
+      <div class="brand"><span class="logo">◎</span> KABU RADAR</div>
+      <div class="meta">
+        <span id="status" class="dot"></span>
+        <span class="mono" id="updated">—</span>
+        <span class="chip" id="provider">…</span>
+        <span class="chip accent" id="wmode"></span>
+        <button id="open-settings" class="icon-btn" aria-label="設定">⚙</button>
+      </div>
     </div>
+    <nav class="tabs">
+      <button class="tab" data-tab="watch">監視</button>
+      <button class="tab" data-tab="screener">スクリーナー</button>
+      <button class="tab" data-tab="paper">ペーパートレード</button>
+      <button class="tab" data-tab="backtest">バックテスト</button>
+    </nav>
   </header>
 
   <main>
-    <section>
-      <h2>今日の狙い目 <small>スコア20以上を自動抽出</small></h2>
-      <div id="picks" class="picks"></div>
-    </section>
+    <!-- 監視 -->
+    <div id="view-watch" class="view">
+      <section>
+        <h2>今日の狙い目 <small>ウォッチリストからスコア20以上</small></h2>
+        <div id="picks" class="picks"></div>
+      </section>
 
-    <section>
-      <div class="sec-head">
-        <h2>ウォッチリスト</h2>
-        <form id="add-form" class="add">
-          <input id="add-sym" placeholder="銘柄コード（例: AAPL, 7203）" autocomplete="off" />
-          <button>追加</button>
-        </form>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>銘柄</th><th class="num">現在値</th><th class="num">前日比</th><th class="hide-sm">30日</th><th>スコア</th><th>判定</th></tr></thead>
-          <tbody id="rows"></tbody>
-        </table>
-      </div>
-    </section>
+      <section>
+        <div class="sec-head">
+          <h2>ウォッチリスト</h2>
+          <form id="add-form" class="add">
+            <input id="add-sym" placeholder="銘柄コード（例: AAPL, 7203）" autocomplete="off" />
+            <button>追加</button>
+          </form>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>銘柄</th><th class="num">現在値</th><th class="num">前日比</th><th class="hide-sm">30日</th><th>スコア</th><th class="hide-sm">判定</th></tr></thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+      </section>
 
-    <section id="detail" class="detail" hidden>
-      <div class="d-head">
-        <div>
-          <h2 id="d-title"></h2>
-          <div id="d-price"></div>
+      <section id="detail" class="detail" hidden>
+        <div class="d-head">
+          <div>
+            <h2 id="d-title"></h2>
+            <div id="d-price"></div>
+          </div>
+          <button id="d-close" class="icon-btn" aria-label="閉じる">✕</button>
         </div>
-        <button id="d-close" class="icon-btn" aria-label="閉じる">✕</button>
-      </div>
-      <canvas id="chart"></canvas>
-      <div class="legend"><i class="l5"></i>5日 <i class="l25"></i>25日 <i class="l75"></i>75日 <i class="lbb"></i>ボリンジャー±2σ</div>
-      <div class="d-grid">
-        <div>
-          <h3 id="d-score"></h3>
-          <ul id="d-signals" class="signals"></ul>
-        </div>
-        <div class="alerts">
-          <h3>価格アラート</h3>
-          <label>上抜けで通知 <input id="al-above" type="number" step="any" inputmode="decimal" /></label>
-          <label>下抜けで通知 <input id="al-below" type="number" step="any" inputmode="decimal" /></label>
-          <button id="al-save">保存</button>
-          <button id="d-remove" class="ghost danger">ウォッチリストから外す</button>
-        </div>
-      </div>
-    </section>
+        <div id="d-events"></div>
+        <canvas id="chart"></canvas>
+        <div class="legend"><i class="l5"></i>5日 <i class="l25"></i>25日 <i class="l75"></i>75日 <i class="lbb"></i>ボリンジャー±2σ</div>
 
-    <p class="disclaimer">本サイトの判定はテクニカル指標を機械的に採点したもので、投資助言ではありません。売買の判断はご自身の責任で行ってください。デモモードの値はシミュレーションです。</p>
+        <div class="ai">
+          <div class="ai-head"><h3>✦ AI「なぜ今？」解説</h3><button id="d-ai-btn" class="mini">AIに聞く</button></div>
+          <div id="d-ai-text"></div>
+        </div>
+
+        <div class="d-grid">
+          <div>
+            <h3 id="d-score"></h3>
+            <ul id="d-signals" class="signals"></ul>
+            <h3 class="mt">ニュース</h3>
+            <ul id="d-news" class="news"></ul>
+          </div>
+          <div class="alerts">
+            <h3>価格アラート</h3>
+            <label>上抜けで通知 <input id="al-above" type="number" step="any" inputmode="decimal" /></label>
+            <label>下抜けで通知 <input id="al-below" type="number" step="any" inputmode="decimal" /></label>
+            <button id="al-save">保存</button>
+            <button id="d-remove" class="ghost danger">ウォッチリストから外す</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- スクリーナー -->
+    <div id="view-screener" class="view" hidden>
+      <section>
+        <h2>スクリーナー <small id="scr-src"></small></h2>
+        <div class="filters">
+          <select id="scr-market"><option value="all">日米すべて</option><option value="JP">日本株</option><option value="US">米国株</option></select>
+          <select id="scr-min">
+            <option value="40">強い買いシグナルのみ</option>
+            <option value="20" selected>注目以上</option>
+            <option value="0">0点以上</option>
+            <option value="-100">すべて</option>
+          </select>
+          <input id="scr-q" placeholder="銘柄名・コードで絞り込み" />
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>銘柄</th><th class="num">現在値</th><th>スコア</th><th class="hide-sm">点灯中のシグナル</th><th></th></tr></thead>
+            <tbody id="scr-rows"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <!-- ペーパートレード -->
+    <div id="view-paper" class="view" hidden>
+      <section>
+        <h2>ペーパートレード（実運用ログ） <small>サジェスト通りに機械的に売買した場合の記録</small></h2>
+        <div id="paper-live"></div>
+      </section>
+      <section>
+        <h2>過去1年シミュレーション <small>同じルールを過去データに適用</small></h2>
+        <div id="paper-sim"></div>
+      </section>
+    </div>
+
+    <!-- バックテスト -->
+    <div id="view-backtest" class="view" hidden>
+      <section>
+        <h2>バックテスト <small>各シグナルの「当たり具合」</small></h2>
+        <div id="bt-body"></div>
+      </section>
+    </div>
+
+    <p class="disclaimer">本サイトの判定・解説はテクニカル指標とAIによる機械的なもので、投資助言ではありません。売買の判断はご自身の責任で行ってください。デモモードの値はシミュレーションです。自動取得データは約20分遅れです。</p>
   </main>
 
   <dialog id="settings">
     <form method="dialog">
       <h2>設定</h2>
-      <label>データ取得元
-        <select id="s-provider">
-          <option value="demo">デモ（シミュレーション・キー不要）</option>
-          <option value="twelvedata">Twelve Data（米国株・無料APIキー）</option>
-        </select>
-      </label>
-      <label>APIキー <input id="s-key" type="password" autocomplete="off" placeholder="twelvedata.com で無料取得" /></label>
-      <label>更新間隔（秒） <input id="s-interval" type="number" min="2" /></label>
-      <small class="muted">Twelve Data 無料枠は1分8リクエストのため、60秒以上に自動調整されます。</small>
-      <label>上昇の色
-        <select id="s-up"><option value="green">緑（欧米式）</option><option value="red">赤（日本式）</option></select>
-      </label>
-      <button id="s-notify" class="ghost">ブラウザ通知を許可する</button>
+
+      <fieldset>
+        <legend>データ</legend>
+        <label>取得元
+          <select id="s-provider">
+            <option value="auto">自動（GitHubの自動取得データ → なければデモ）</option>
+            <option value="demo">デモ（シミュレーション）</option>
+            <option value="twelvedata">Twelve Data（米国株リアルタイム・無料キー）</option>
+          </select>
+        </label>
+        <label>Twelve Data APIキー <input id="s-key" type="password" autocomplete="off" placeholder="twelvedata.com で無料取得" /></label>
+        <label>更新間隔（秒・デモ用） <input id="s-interval" type="number" min="2" /></label>
+      </fieldset>
+
+      <fieldset>
+        <legend>シグナルの配点</legend>
+        <label>配点モード
+          <select id="s-wmode">
+            <option value="base">標準</option>
+            <option value="tuned">自動チューニング（過去成績から調整）</option>
+            <option value="custom">カスタム（自分で決める）</option>
+          </select>
+        </label>
+        <label>投資スタイル <select id="s-style"></select></label>
+        <details>
+          <summary>シグナルごとの配点</summary>
+          <div id="s-weights" class="weights"></div>
+        </details>
+      </fieldset>
+
+      <fieldset>
+        <legend>AI解説（Claude）</legend>
+        <label>Anthropic APIキー <input id="s-aikey" type="password" autocomplete="off" placeholder="sk-ant-…（この端末にのみ保存）" /></label>
+        <label>モデル <select id="s-aimodel"></select></label>
+      </fieldset>
+
+      <fieldset>
+        <legend>表示・通知</legend>
+        <label>上昇の色
+          <select id="s-up"><option value="green">緑（欧米式）</option><option value="red">赤（日本式）</option></select>
+        </label>
+        <button id="s-notify" class="ghost">ブラウザ通知を許可する</button>
+        <small class="muted">アプリを閉じていてもスマホに通知したい場合は README の「ntfy 通知」を設定してください。</small>
+      </fieldset>
+
       <div class="row">
         <button id="s-cancel" class="ghost">キャンセル</button>
-        <button id="s-save">保存して再接続</button>
+        <button id="s-save">保存</button>
       </div>
     </form>
   </dialog>

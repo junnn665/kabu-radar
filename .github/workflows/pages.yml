@@ -1,42 +1,101 @@
-name: Test & Deploy to GitHub Pages
+name: Update data & Deploy
 
+# 株価データの取得 → 判定・バックテスト・ペーパートレード更新 → GitHub Pages へ公開
 on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      force_daily:
+        description: '決算日・ニュースも今すぐ取り直す'
+        type: boolean
+        default: false
+  schedule:
+    - cron: '7,22,37,52 0-6 * * 1-5'    # 東証の取引時間（JST 9:00〜15:59）
+    - cron: '7,22,37,52 13-21 * * 1-5'  # 米国市場の取引時間（JST 22時台〜翌6時台）
+    - cron: '3 22 * * *'                # 毎朝 JST 7:03（決算日・ニュースの日次更新）
 
 permissions:
-  contents: read
+  contents: write   # data ブランチへの保存
   pages: write
   id-token: write
 
 concurrency:
-  group: pages
-  cancel-in-progress: true
+  group: kabu-radar-data
+  cancel-in-progress: false
 
 jobs:
-  test:
+  build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+
+      - name: 前回のデータ（data ブランチ）を取得
+        run: |
+          git clone --depth 1 -b data "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" prev \
+            || mkdir -p prev
+
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
-      - run: npm test
+
+      - name: テスト
+        run: npm test
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 株価・決算日・ニュースを取得（yfinance）
+        id: fetch
+        continue-on-error: true
+        run: |
+          pip install --quiet yfinance
+          python scripts/fetch_data.py --prev prev --out raw ${{ inputs.force_daily && '--force-daily' || '' }}
+
+      - name: 判定・バックテスト・ペーパートレード・AI解説を生成
+        if: steps.fetch.outcome == 'success'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AI_MODEL: ${{ vars.AI_MODEL }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          SITE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+        run: node scripts/build_data.mjs --raw raw --prev prev --out data
+
+      - name: 取得に失敗したら前回のデータを使う
+        if: steps.fetch.outcome != 'success'
+        run: |
+          mkdir -p data
+          cp -r prev/. data/ 2>/dev/null || true
+          rm -rf data/.git
+
+      - name: data ブランチに保存（履歴は残さず最新1コミットのみ）
+        if: steps.fetch.outcome == 'success'
+        run: |
+          cd data
+          git init -q -b data
+          git add -A
+          git -c user.name="kabu-radar-bot" -c user.email="actions@users.noreply.github.com" commit -qm "data $(date -u +%FT%TZ)"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" data
+          rm -rf .git
+
+      - name: 公開用ファイルをまとめる
+        run: |
+          mkdir -p _site
+          cp -r index.html manifest.webmanifest sw.js css js icons config _site/
+          [ -d data ] && cp -r data _site/ || true
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
 
   deploy:
-    needs: test
+    needs: build
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
-        with:
-          enablement: true
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: .
       - id: deployment
         uses: actions/deploy-pages@v4
