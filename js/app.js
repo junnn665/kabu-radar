@@ -28,7 +28,7 @@ const DEFAULTS = {
   holdings: [],       // [{ id, sym, shares, cost, date }]
   marketFilter: false, // 地合いフィルター（検証で逆効果だったため標準はオフ）
   method: 'auto',      // 判定方式：'auto'（検証成績が良い方）| 'ai'（AI予測）| 'points'（シグナル点数）
-  v: 3,
+  v: 4,
 };
 const store = {
   load() {
@@ -39,10 +39,18 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 
+const isJpCode = (s) => /^\d{3}[0-9A-Z]$/.test(s);
 function migrate(st) {
   if ((st.v || 0) < 3) { st.marketFilter = false; st.v = 3; }
+  if (st.v < 4) {
+    // 日本株専用になる前の米国株コード（AAPL など）をウォッチリスト・アラートから外す
+    st.watchlist = (st.watchlist || []).filter(isJpCode);
+    for (const k of Object.keys(st.alerts || {})) if (!isJpCode(k)) delete st.alerts[k];
+    st.v = 4;
+  }
   return st;
 }
+const save = () => store.save(state.settings);
 
 const state = {
   settings: migrate(store.load()),
@@ -61,6 +69,8 @@ const state = {
   scr: { seg: 'all', sector: 'all', min: 2, q: '', funda: 'all', liquid: true, limit: 100 },
   universe: null,    // 自動取得の対象銘柄（config/universe.json）
 };
+
+store.save(state.settings); // 移行した設定を保存
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -144,7 +154,12 @@ async function loadCandles(symbols) {
     try {
       state.candles[s] = await state.provider.getDailyCandles(s);
     } catch (e) {
-      if (!state.provider.unavailable && !state.settings.holdings.some((h) => h.sym === s)) toast(`${s}: ${e.message}`, 'err');
+      state.failed = state.failed || new Set();
+      if (!state.provider.unavailable && !state.failed.has(s)) {
+        state.failed.add(s);
+        clearTimeout(state.failTimer);
+        state.failTimer = setTimeout(() => toast(`${[...state.failed].join('・')} は株価データがありません（行に「取得不可」と表示します）`, 'err'), 400);
+      }
       state.candles[s] = [];
     }
     delete state.symStats[s];
