@@ -144,6 +144,8 @@ def load_universe(args, today):
             symbols, date = fetch_universe(), today.isoformat()
         except Exception as e:  # noqa: BLE001
             log_err("JPX銘柄一覧", e)
+    # data ブランチに保存されている一覧はサイト用に項目を減らしているので、Yahoo のティッカーを補う
+    symbols = [dict(u, yf=u.get("yf") or f"{u['sym']}.T") for u in symbols if not u.get("seg") == "X"]
     extra = load_json("config/universe_extra.json", {}).get("symbols", [])
     have = {u["sym"] for u in symbols}
     symbols = symbols + [dict(u, seg=u.get("seg", "X")) for u in extra if u["sym"] not in have]
