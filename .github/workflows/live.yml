@@ -1,0 +1,68 @@
+name: Live quotes (1分ごと)
+
+# 取引時間中、全銘柄の株価を1分ごとに live ブランチへ書き出す（サイトはそれを1分ごとに読む）
+# 朝に1回起動して 15:31 まで動き続ける。起動が遅れたとき・落ちたときのために、日中にも予備の起動を入れている
+# （すでに動いているときは、終わるまで待ってから起動し、取引終了なら何もせず終わる）
+on:
+  workflow_dispatch:
+    inputs:
+      test:
+        description: '1回だけ取得して結果を表示する（テスト）'
+        type: boolean
+        default: false
+  schedule:
+    - cron: '40 23 * * 0-4'   # JST 8:40（平日）
+    - cron: '5 1 * * 1-5'     # JST 10:05 予備
+    - cron: '35 3 * * 1-5'    # JST 12:35 予備
+    - cron: '20 5 * * 1-5'    # JST 14:20 予備
+
+permissions:
+  contents: write   # live ブランチへの書き込み
+  actions: write    # 6時間の上限前に自分をもう一度起動する
+
+concurrency:
+  group: kabu-radar-live
+  cancel-in-progress: false
+
+jobs:
+  live:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    steps:
+      - name: 取引時間外なら何もしない
+        id: gate
+        run: |
+          H=$(TZ=Asia/Tokyo date +%H%M); D=$(TZ=Asia/Tokyo date +%u)
+          if [ "${{ inputs.test }}" = "true" ] || { [ "$D" -le 5 ] && [ "$H" -ge 0830 ] && [ "$H" -lt 1530 ]; }; then echo "run=yes" >> "$GITHUB_OUTPUT"; else echo "取引時間外（$H）"; echo "run=no" >> "$GITHUB_OUTPUT"; fi
+
+      - uses: actions/checkout@v5
+        if: steps.gate.outputs.run == 'yes'
+
+      - uses: actions/setup-python@v6
+        if: steps.gate.outputs.run == 'yes'
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: 準備
+        if: steps.gate.outputs.run == 'yes'
+        run: |
+          pip install --quiet -r requirements.txt 2>&1 | tail -3
+          git fetch -q --depth 1 origin data
+          git show origin/data:universe.json > universe.json
+          mkdir live && cd live
+          git init -q -b live
+          git config user.name "kabu-radar-bot"; git config user.email "actions@users.noreply.github.com"
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}"
+          echo '{}' > live.json && git add live.json && git commit -qm init
+
+      - name: テスト（1回だけ）
+        if: steps.gate.outputs.run == 'yes' && inputs.test
+        run: python scripts/live_quotes.py --universe universe.json --once --out live/live.json
+
+      - name: 1分ごとに更新（15:31まで）
+        if: steps.gate.outputs.run == 'yes' && !inputs.test
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python -u scripts/live_quotes.py --universe universe.json --repo-dir live
