@@ -216,14 +216,32 @@ function mergeQuote(s, q) {
   const cs = state.candles[s];
   if (!cs?.length) return false;
   const lastC = cs[cs.length - 1];
-  if (q.date && q.date > lastC.date) return true; // 新しい日足 → 取り直し
-  if (Math.abs(lastC.close - q.price) > 1e-9) {
-    lastC.close = q.price;
-    lastC.high = Math.max(lastC.high, q.price);
-    lastC.low = Math.min(lastC.low, q.price);
-    if (q.volume) lastC.volume = q.volume;
+  if (q.date && q.date > lastC.date) {
+    // 1分ごとの株価なら今日の足をその場で作る（それ以外は日足を取り直す）
+    if (!q.live) return true;
+    cs.push({ date: q.date, open: q.open || q.price, high: Math.max(q.high || q.price, q.price), low: Math.min(q.low || q.price, q.price), close: q.price, volume: q.volume || 0 });
+    return false;
   }
+  if (q.date && q.date < lastC.date) return false;
+  lastC.close = q.price;
+  lastC.high = Math.max(lastC.high, q.high || q.price, q.price);
+  lastC.low = Math.min(lastC.low, q.low || q.price, q.price);
+  if (q.volume) lastC.volume = q.volume;
   return false;
+}
+
+// 1分ごとの株価を、スクリーナーの行・AIピック・指数にも反映する（判定やAI予測は約10分ごとの計算のまま）
+function applyLive() {
+  const feed = state.provider?.liveFeed;
+  if (!feed?.fresh()) return;
+  for (const r of state.server.screener?.rows || []) {
+    const q = feed.quote(r.sym);
+    if (q) { r.price = q.price; r.changePct = q.changePct; }
+  }
+  const idx = state.server.market?.indices;
+  for (const [k, v] of Object.entries(feed.doc.idx || {})) {
+    if (idx?.[k] && v[0] && v[1]) { idx[k].price = v[0]; idx[k].changePct = (v[0] / v[1] - 1) * 100; }
+  }
 }
 
 function recompute(s) {
@@ -257,6 +275,7 @@ async function tick() {
       checkAlerts(s, q, old);
     }
     if (state.provider.static && state.provider.quotesDoc?.updatedAt !== before) { await loadServer(); recomputeAll(); }
+    applyLive();
     checkHoldings();
     if (refetch.length) loadCandles(refetch);
     const recovered = state.provider.unavailable;
@@ -292,6 +311,13 @@ function renderStatus() {
     return;
   }
   banner.hidden = true;
+  if (p.liveFeed?.fresh()) {
+    const t = new Date(p.liveFeed.doc.asOf * 1000);
+    $('#status').className = 'dot live';
+    $('#updated').textContent = `${t.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Tokyo' })} の株価`;
+    $('#updated').title = '1分ごとに更新（データ元の都合で約20分遅れ）';
+    return;
+  }
   const doc = p.quotesDoc || {};
   const last = Object.values(doc.q || {})[0]?.[3];
   const at = doc.updatedAt ? new Date(doc.updatedAt) : null;
@@ -307,7 +333,7 @@ function renderStatus() {
 
 async function restart() {
   clearInterval(state.timer);
-  state.provider = await makeProvider(state.settings);
+  state.provider = await makeProvider({ ...state.settings, repo: repoName() });
   Object.assign(state, { candles: {}, quotes: {}, analyses: {}, prevVerdict: {}, symStats: {}, server: {}, local: {} });
   $('#provider').textContent = state.provider.name;
   renderStatus();

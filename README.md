@@ -80,14 +80,17 @@ AI予測の上位1%を機械的に売買する仮想口座（同じ業種は2銘
 | 種類 | 名前 | 用途 |
 |---|---|---|
 | Secret | `NTFY_TOPIC` | スマホへのプッシュ通知（[ntfy](https://ntfy.sh/) アプリで同じトピックを購読） |
-| Variable | `AI_PROVIDER` | `none` で GitHub Models の無料AIを止める |
+| Variable | `AI_PROVIDER` | `github` で GitHub Models の無料AIを試す（標準はオフ。ルールによる自動まとめを表示） |
 | Secret | `ANTHROPIC_API_KEY` | （有料・任意）上位5銘柄の解説を Claude で生成 |
 
 ## データの流れ
 
 ```
-GitHub Actions（平日 朝6時＋取引時間中5分おき）
-  scripts/fetch_data.py   JPX 銘柄一覧・決算発表予定日、yfinance で日足（朝は3年分、日中は売買の多い銘柄を毎回・全銘柄は約15分おき）・配当・PER/PBR、
+GitHub Actions
+  live.yml（取引時間中ずっと動く）
+  scripts/live_quotes.py  全銘柄の株価を1分ごとに取得 → live ブランチ（サイトが1分ごとに読む）。10分ごとに pages.yml を起動
+pages.yml（平日 朝6時＋取引時間中10分ごと）
+  scripts/fetch_data.py   JPX 銘柄一覧・決算発表予定日、日足（朝は yfinance で3年分、日中は live.json から今日の足を作る）・配当・PER/PBR、
                           Google ニュース（上位銘柄）
                           日足は GitHub Actions のキャッシュで引き継ぐ
   scripts/model.py        AI予測（朝は学習と検証、日中は予測のみ）

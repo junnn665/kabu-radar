@@ -15,7 +15,7 @@ on:
         type: boolean
         default: false
   schedule:
-    - cron: '2-59/5 0-6 * * 1-5'      # 東証の取引時間（JST 9:02〜15:57、5分おき。全銘柄は約15分おき）
+    - cron: '17,47 0-6 * * 1-5'       # 予備（ふだんは live.yml が取引中10分ごとに起動する）
     - cron: '3 21 * * 0-4'            # 平日の朝 JST 6:03（3年分の取り直し・AI予測モデルの学習・決算予定日・財務・ニュース）
 
 permissions:
@@ -30,7 +30,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
@@ -41,7 +41,7 @@ jobs:
             || mkdir -p prev
 
       - name: 日足キャッシュを復元
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: cache
           key: hist-${{ github.run_id }}
@@ -54,7 +54,7 @@ jobs:
       - name: テスト
         run: npm test
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
           cache: pip
@@ -66,7 +66,8 @@ jobs:
         run: |
           set -o pipefail
           pip install --quiet -r requirements.txt 2>&1 | tail -3
-          python scripts/fetch_data.py --prev prev --cache cache --out raw ${{ inputs.force_daily && '--force-daily' || '' }} 2>&1 | tee fetch.log
+          git fetch -q --depth 1 origin live 2>/dev/null && git show origin/live:live.json > live.json 2>/dev/null || echo '{}' > live.json
+          python scripts/fetch_data.py --prev prev --cache cache --out raw --live live.json ${{ inputs.force_daily && '--force-daily' || '' }} 2>&1 | tee fetch.log
           echo "::notice title=取得結果::$(tail -n 1 fetch.log)"
 
       - name: 取得エラーの内容を表示
@@ -111,7 +112,7 @@ jobs:
 
       - name: 日足キャッシュを保存
         if: steps.fetch.outcome == 'success' && steps.tier.outputs.save == 'yes'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: cache
           key: hist-${{ github.run_id }}
@@ -153,13 +154,13 @@ jobs:
           cp -r index.html manifest.webmanifest sw.js css js icons _site/
           cp -r data _site/
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v4
         with:
           path: _site
 
   deploy:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

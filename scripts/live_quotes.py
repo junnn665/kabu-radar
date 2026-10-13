@@ -1,4 +1,7 @@
-"""取引時間中、全銘柄の株価を1分ごとに取得して live ブランチの live.json に書き出す。
+"""取引時間中、全銘柄の株価を1分ごとに取得して live ブランチに書き出す。
+  live.json                 : 最新（Actions の計算用）
+  m/YYYYMMDD-HHMM.json      : 分ごとのコピー（サイト用。raw.githubusercontent.com のキャッシュを避けるため、毎分違う名前）
+10分ごと（と引け後）に pages.yml を起動して、AI予測・シグナルを計算し直す。
 
 GitHub Actions（live.yml）から、朝に1回だけ起動して 15:31 まで動き続ける。
 1ジョブは最長6時間なので、5時間40分たったら自分自身をもう一度起動してから終わる。
@@ -164,26 +167,45 @@ def load_universe(path):
     return syms + [u for u in extra if u["sym"] not in have]
 
 
-def publish(repo_dir, doc):
-    path = os.path.join(repo_dir, "live.json")
-    with open(path, "w") as f:
-        json.dump(doc, f, ensure_ascii=False, separators=(",", ":"))
+KEEP_MINUTES = 10
+
+
+def minute_name(ts):
+    return dt.datetime.fromtimestamp(ts, JST).strftime("%Y%m%d-%H%M")
+
+
+def publish(repo_dir, doc, minute_ts=None):
+    """live.json（最新）と m/YYYYMMDD-HHMM.json（分ごと・直近10分だけ残す）を書いて push。
+    raw.githubusercontent.com は同じURLを5分キャッシュするので、サイトは「分ごとに違うファイル名」を読む。"""
+    body = json.dumps(doc, ensure_ascii=False, separators=(",", ":"))
+    with open(os.path.join(repo_dir, "live.json"), "w") as f:
+        f.write(body)
+    mdir = os.path.join(repo_dir, "m")
+    os.makedirs(mdir, exist_ok=True)
+    name = minute_name(minute_ts or doc["t"])
+    with open(os.path.join(mdir, f"{name}.json"), "w") as f:
+        f.write(body)
+    for old in sorted(os.listdir(mdir))[:-KEEP_MINUTES]:
+        os.remove(os.path.join(mdir, old))
     run = lambda *a: subprocess.run(["git", "-C", repo_dir, *a], check=True, capture_output=True, text=True)  # noqa: E731
-    run("add", "live.json")
+    run("add", "-A", ".")
     # 常に1コミットだけ（履歴を増やさない）
     run("commit", "--amend", "-q", "-m", f"live {dt.datetime.fromtimestamp(doc['asOf'], JST):%Y-%m-%d %H:%M}", "--allow-empty")
     run("push", "-q", "-f", "origin", "HEAD:live")
 
 
-def redispatch():
+def dispatch(workflow, label):
     repo, token = os.environ.get("GITHUB_REPOSITORY"), os.environ.get("GH_TOKEN")
     if not (repo and token):
         return
     try:
-        subprocess.run(["gh", "api", "-X", "POST", f"repos/{repo}/actions/workflows/live.yml/dispatches", "-f", "ref=main"], check=True)
-        print("続きのジョブを起動しました")
+        subprocess.run(["gh", "api", "-X", "POST", f"repos/{repo}/actions/workflows/{workflow}/dispatches", "-f", "ref=main"], check=True, capture_output=True)
+        print(f"{label}を起動しました", flush=True)
     except Exception as e:  # noqa: BLE001
-        print(f"再起動に失敗: {e}", file=sys.stderr)
+        print(f"{label}の起動に失敗: {e}", file=sys.stderr)
+
+
+AI_EVERY_MIN = 10  # AI予測・シグナルの計算し直し（pages.yml）を起動する間隔
 
 
 def main():
@@ -192,7 +214,6 @@ def main():
     ap.add_argument("--repo-dir", default="live")
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--out")
-    ap.add_argument("--interval", type=int, default=60)
     args = ap.parse_args()
     universe = load_universe(args.universe)
     if not universe:
@@ -208,50 +229,59 @@ def main():
         return
 
     start = time.time()
-    count, fails, last_lunch = 0, 0, False
+    count, fails, lunch_done = 0, 0, False
+    today = now_jst().date().isoformat()
     while True:
         phase = market_phase()
         if phase == "closed":
-            # 引け後にもう1回だけ（15:30の終値を確定させる）
-            if count:
+            if count:  # 引け後にもう1回（15:30の終値）→ サイトの判定も最後に1回計算し直す
+                time.sleep(30)
                 try:
                     publish(args.repo_dir, snapshot(universe))
                 except Exception:  # noqa: BLE001
                     traceback.print_exc()
+                dispatch("pages.yml", "引け後の計算")
             print(f"取引終了。{count}回更新")
             break
         if time.time() - start > MAX_RUN_SEC:
-            redispatch()
+            dispatch("live.yml", "続きのジョブ")
             break
         if phase == "pre":
-            time.sleep(20)
+            time.sleep(10)
             continue
         if phase == "lunch":
-            if not last_lunch:  # 前場の終値を1回だけ
-                last_lunch = True
+            if not lunch_done:  # 前場の終値を1回だけ
+                lunch_done = True
                 try:
                     publish(args.repo_dir, snapshot(universe))
                 except Exception:  # noqa: BLE001
                     traceback.print_exc()
             time.sleep(30)
             continue
-        last_lunch = False
-        tick = time.time()
+        # 毎分 5秒に取得（ファイル名の「分」と揃えるため）
+        now = time.time()
+        minute_ts = int(now // 60 * 60)
         try:
             doc = snapshot(universe)
-            publish(args.repo_dir, doc)
+            publish(args.repo_dir, doc, minute_ts)
             count += 1
             fails = 0
+            delay = (time.time() - doc["asOf"]) / 60
             if count == 1 or count % 30 == 0:
-                delay = (time.time() - doc["asOf"]) / 60
                 print(f"#{count} {doc['n']}銘柄 {doc['sec']}s {doc['source']} 株価時刻 {dt.datetime.fromtimestamp(doc['asOf'], JST):%H:%M}（{delay:.0f}分前）", flush=True)
+            # 祝日など：取引時間なのに今日の株価が無い → 終了
+            if now_jst().time() >= dt.time(9, 40) and doc["date"] != today:
+                print(f"今日（{today}）の株価がありません（休場日）。終了します")
+                break
+            if dt.datetime.fromtimestamp(minute_ts, JST).minute % AI_EVERY_MIN == 0 and doc["date"] == today:
+                dispatch("pages.yml", "AI予測・シグナルの計算")
         except Exception:  # noqa: BLE001
             fails += 1
             traceback.print_exc()
             if fails >= 30:
                 sys.exit("30回続けて失敗したので終了します")
-        time.sleep(max(5, args.interval - (time.time() - tick)))
-
+        nxt = (time.time() // 60 + 1) * 60 + 5
+        time.sleep(max(1, nxt - time.time()))
 
 if __name__ == "__main__":
     main()

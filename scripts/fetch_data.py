@@ -208,6 +208,30 @@ def merge_bars(old, new):
     return {k: old[k][:keep] + new[k] for k in "dohlcv"}
 
 
+def apply_live(bars, live, today, max_age_min=15):
+    """live.json の今日の株価で、各銘柄の最後の足を作る／置き換える。使った銘柄の集合を返す。"""
+    if not live.get("syms") or live.get("date") != today.isoformat() or time.time() - live.get("t", 0) > max_age_min * 60:
+        return set()
+    d = live["date"]
+    done = set()
+    for i, s in enumerate(live["syms"]):
+        b = bars.get(s)
+        p, o, h, l, v = live["p"][i], live["o"][i], live["h"][i], live["l"][i], live["v"][i]
+        if not b or not b.get("d") or not p:
+            continue
+        o, h, l = o or p, max(h or p, p), min(l or p, p)
+        if b["d"][-1] == d:
+            for k, x in zip("ohlcv", (o, h, l, p, v)):
+                b[k][-1] = x
+        elif b["d"][-1] < d:
+            for k, x in zip("dohlcv", (d, o, h, l, p, v)):
+                b[k].append(x)
+        else:
+            continue
+        done.add(s)
+    return done
+
+
 def trim(bars):
     return {k: v[-KEEP_BARS:] for k, v in bars.items()}
 
@@ -331,6 +355,7 @@ def main():
     ap.add_argument("--cache", default="cache")
     ap.add_argument("--out", default="raw")
     ap.add_argument("--force-daily", action="store_true")
+    ap.add_argument("--live", help="live_quotes.py が書いた live.json（新しければ日中の取得に使う）")
     args = ap.parse_args()
     t0 = time.time()
     today = dt.datetime.now(JST).date()
@@ -372,7 +397,14 @@ def main():
             if active:
                 targets = [t for t in by_yf if by_yf[t] in active]
         tier = "all" if len(targets) == len(by_yf) else "active"
-        got = download(targets, "5d")
+        # 1分ごとの株価（live.json）が新しければ、今日の足はそこから作る（全銘柄でも数秒）
+        live = load_json(args.live, {}) if args.live else {}
+        patched = apply_live(bars, live, today) if live else set()
+        if patched:
+            DIAG["live"] = {"symbols": len(patched), "asOf": dt.datetime.fromtimestamp(live["asOf"], JST).strftime("%H:%M")}
+            targets = [t for t in targets if by_yf[t] not in patched]
+            tier = "all"
+        got = download(targets, "5d") if targets else {}
         for t, sub in got.items():
             b, _ = frame_to_bars(sub)
             bars[by_yf[t]] = trim(merge_bars(bars.get(by_yf[t]), b))

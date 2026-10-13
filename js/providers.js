@@ -81,10 +81,65 @@ export class DemoProvider {
   }
 }
 
-// ---------- GitHub Actions が生成した静的データ（東証全銘柄・取引時間中15分ごと・約20分遅延） ----------
+// ---------- 1分ごとの株価（live ブランチ） ----------
+// raw.githubusercontent.com は同じURLを5分キャッシュするので、live_quotes.py が毎分違う名前（m/YYYYMMDD-HHMM.json）で書き出し、
+// こちらは「少し前の分」のファイルを読む。取引時間外や祝日は読みに行かない。
+export const jstParts = (ms = Date.now()) => {
+  const d = new Date(ms + 9 * 3600e3);
+  return { date: d.toISOString().slice(0, 10), hm: d.getUTCHours() * 100 + d.getUTCMinutes(), wd: d.getUTCDay(), stamp: d.toISOString().slice(0, 16).replace(/[-:]/g, '').replace('T', '-') };
+};
+export const liveWindow = (ms = Date.now()) => {
+  const { hm, wd } = jstParts(ms);
+  return wd >= 1 && wd <= 5 && hm >= 900 && hm <= 1540;
+};
+
+export class LiveFeed {
+  constructor(repo, { branch = 'live', fetchFn } = {}) {
+    this.base = `https://raw.githubusercontent.com/${repo}/${branch}/m/`;
+    this.fetch = fetchFn || ((u) => fetch(u));
+    this.doc = null; this.name = null; this.misses = 0; this.nextTry = 0; this.index = null;
+  }
+
+  // 新しいファイルが読めたら true
+  async poll(now = Date.now()) {
+    if (!liveWindow(now) || now < this.nextTry) return false;
+    // 書き出しは毎分5〜10秒ごろ。75秒前の分から順に、新しいものを探す
+    for (const back of [75, 135, 195]) {
+      const name = jstParts(now - back * 1000).stamp;
+      if (name === this.name) { this.misses = 0; return false; }
+      try {
+        const r = await this.fetch(this.base + name + '.json');
+        if (!r.ok) continue;
+        const doc = await r.json();
+        if (!doc?.syms) continue;
+        this.doc = doc; this.name = name; this.misses = 0;
+        this.index = new Map(doc.syms.map((s, i) => [s, i]));
+        return true;
+      } catch { /* 次の候補へ */ }
+    }
+    // 見つからない（昼休み・祝日・止まっている）→ 5分あけてから
+    if (++this.misses >= 2) this.nextTry = now + 5 * 60e3;
+    return false;
+  }
+
+  // 今日の新しいデータか（10分以上古ければ使わない）
+  fresh(now = Date.now()) {
+    return !!this.doc && this.doc.date === jstParts(now).date && now / 1000 - this.doc.t < 10 * 60;
+  }
+
+  quote(s) {
+    const i = this.index?.get(s);
+    if (i == null) return null;
+    const d = this.doc, p = d.p[i], pc = d.pc[i];
+    if (!p) return null;
+    return { price: p, prevClose: pc, change: pc ? p - pc : 0, changePct: pc ? (p / pc - 1) * 100 : 0, volume: d.v[i], open: d.o[i], high: d.h[i], low: d.l[i], date: d.date, time: (d.asOf + (d.ts?.[i] || 0)) * 1000, live: true };
+  }
+}
+
+// ---------- GitHub Actions が生成した静的データ（東証全銘柄・約20分遅延） ----------
 export class StaticProvider {
   constructor(base = 'data') {
-    this.name = '東証全銘柄（5分更新）';
+    this.name = '東証全銘柄（1分更新）';
     this.base = base;
     this.live = false;
     this.static = true;
@@ -114,6 +169,11 @@ export class StaticProvider {
 
   quote(s) {
     const doc = this.quotesDoc;
+    if (this.liveFeed?.fresh()) {
+      const lq = this.liveFeed.quote(s);
+      const base = doc?.q?.[s];
+      if (lq && (!base || lq.date >= base[3])) return { ...lq, name: this.names[s] || s, marketOpen: true };
+    }
     const q = doc?.q?.[s];
     if (q) {
       const [price, prevClose, volume, date] = q;
@@ -123,7 +183,13 @@ export class StaticProvider {
   }
 
   async getQuotes(symbols) {
-    this.quotesDoc = await this.json('quotes.json', { fresh: true });
+    // 1分ごとの株価が届いている間は、quotes.json（約10分ごとに更新）は5分に1回だけ読む
+    const now = Date.now();
+    this.liveChanged = this.liveFeed ? await this.liveFeed.poll(now) : false;
+    if (!this.liveFeed?.fresh(now) || !this.quotesDoc || now - (this.quotesAt || 0) > 5 * 60e3) {
+      this.quotesDoc = await this.json('quotes.json', { fresh: true });
+      this.quotesAt = now;
+    }
     const res = {};
     for (const s of symbols) { const q = this.quote(s); if (q) res[s] = q; }
     return res;
@@ -137,6 +203,7 @@ export const DEMO_SYMBOLS = Object.keys(DEMO_META);
 export async function makeProvider(settings) {
   if (settings.provider === 'demo') return new DemoProvider();
   const st = new StaticProvider();
+  st.liveFeed = new LiveFeed(settings.repo || 'junnn665/kabu-radar');
   for (let i = 0; i < 3; i++) {
     if (await st.available()) return st;
     await new Promise((r) => setTimeout(r, 1500 * (i + 1)));

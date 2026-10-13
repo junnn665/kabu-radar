@@ -272,7 +272,8 @@ async function main() {
   // 7) AI「なぜ今？」解説（売買代金のある上位5銘柄、シグナルの組み合わせが変わった時だけ）
   const ai = Object.fromEntries(Object.entries(prevAi).filter(([, v]) => v.date >= jstDate));
   const useClaude = !!process.env.ANTHROPIC_API_KEY;
-  const useGithub = !useClaude && !!process.env.GITHUB_TOKEN && process.env.AI_PROVIDER !== 'none';
+  // GitHub Models は応答が「OK」だけで使えないことが続いたため、変数 AI_PROVIDER=github のときだけ試す
+  const useGithub = !useClaude && !!process.env.GITHUB_TOKEN && process.env.AI_PROVIDER === 'github';
   const aiOn = useClaude || useGithub;
   let aiFailures = 0, aiError = null;
   if (aiOn) {
