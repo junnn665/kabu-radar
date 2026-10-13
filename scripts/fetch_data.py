@@ -41,6 +41,8 @@ JPX_LIST_FALLBACK = [
 ]
 JPX_EARNINGS = "https://www.jpx.co.jp/listing/event-schedules/financial-announcement/index.html"
 MARKET = [("N225", "^N225"), ("TOPIX", "1306.T"), ("SPX", "^GSPC"), ("VIX", "^VIX"), ("USDJPY", "JPY=X")]
+# 前の晩の米国市場など（AI予測の入力の候補。米国の日付で終値）
+US = [("SOX", "^SOX"), ("BANK", "KBE"), ("SPX", "^GSPC"), ("NDX", "^IXIC"), ("USDJPY", "JPY=X"), ("TNX", "^TNX")]
 KEEP_BARS = 760          # 約3年（AI予測モデルの学習用。サイトに出す日足は直近260本）
 ALL_EVERY_MIN = 14       # 日中、全銘柄を取り直す間隔（分）。それ以外は売買の多い銘柄だけ
 SEG = {"プライム": "P", "スタンダード": "S", "グロース": "G"}
@@ -434,6 +436,16 @@ def main():
             if b["d"]:
                 market[k] = bars_to_candles(b)
     save_json(os.path.join(args.out, "market.json"), market)
+    us = {}
+    got_us = download([t for _, t in US], "3y")
+    for k, t in US:
+        sub = got_us.get(t)
+        if sub is not None:
+            b, _ = frame_to_bars(sub)
+            if b["d"]:
+                us[k] = {"d": b["d"], "c": b["c"]}
+    save_json(os.path.join(args.out, "us.json"), us)
+    DIAG["us"] = list(us)
 
     # 1日1回の情報（決算予定日・配当・財務）
     prev_events = load_json(os.path.join(args.prev, "events.json"), {})

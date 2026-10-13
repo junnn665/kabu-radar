@@ -99,7 +99,9 @@ def stock_features(b):
     f["lprice"] = np.log10(c)
     # 正解：H営業日後のリターン（あとで市場平均を引く）
     fwd = c.shift(-H) / c - 1
-    return f, fwd, turn
+    # 朝に見て寄り付きで買う場合の正解：翌営業日の始値で買い、H営業日後の終値で売る
+    fwd_o = c.shift(-H) / o.shift(-1) - 1
+    return f, fwd, turn, fwd_o
 
 
 def market_features(market):
@@ -119,17 +121,74 @@ def market_features(market):
     return out.sort_index()
 
 
-def build_frame(history, universe, market):
+US_LINK = ("SOX", "BANK", "USDJPY", "TNX")  # 銘柄ごとの「つられやすさ」を測る米国側の指標
+
+
+def us_table(us, jp_dates):
+    """日本の各営業日 t に対して
+    usp_*：t の取引開始前までに終わった米国の取引（＝t の東証の値動きにもう反映済み）
+    usn_*：t の引け後〜翌営業日の寄り付き前に終わった米国の取引（朝の時点で分かる「前の晩」の米国）"""
+    if not us:
+        return None
+    jp = pd.DataFrame({"date": jp_dates})
+    jp["dt"] = pd.to_datetime(jp["date"])
+    jp["next"] = jp["dt"].shift(-1).fillna(pd.Timestamp("2100-01-01"))
+    out = jp[["date"]].copy()
+    for k, v in us.items():
+        sr = pd.Series(v["c"], index=pd.to_datetime(v["d"]), dtype="float64")
+        sr = sr[~sr.index.duplicated(keep="last")].sort_index()
+        if k == "TNX":
+            f = pd.DataFrame({"r1": sr.diff(), "r5": sr.diff(5)})
+        else:
+            ls = np.log(sr)
+            f = pd.DataFrame({"r1": ls.diff(), "r5": ls.diff(5)})
+        f.index.name = "udt"
+        f = f.reset_index().sort_values("udt")
+        for pre, key in (("usp", "dt"), ("usn", "next")):
+            m = pd.merge_asof(jp[[key]].rename(columns={key: "k"}).sort_values("k"), f.rename(columns={"udt": "k"}),
+                              on="k", direction="backward", allow_exact_matches=False)
+            m.index = jp.sort_values(key).index
+            m = m.sort_index()
+            out[f"{pre}_{k}_r1"] = m["r1"].values
+            out[f"{pre}_{k}_r5"] = m["r5"].values
+    return out.set_index("date")
+
+
+def add_us_links(f, ut):
+    """銘柄ごとに、米国の前夜の動きへの感応度（過去120日のβ）と、それ×前夜の動き"""
+    u = ut.reindex(f.index)
+    for k in US_LINK:
+        xp = u.get(f"usp_{k}_r1")
+        if xp is None:
+            continue
+        y = f["ret1"]
+        cov = (y * xp).rolling(120, min_periods=60).mean() - y.rolling(120, min_periods=60).mean() * xp.rolling(120, min_periods=60).mean()
+        var = xp.rolling(120, min_periods=60).var(ddof=0)
+        beta = (cov / var.replace(0, np.nan)).clip(-5, 5)
+        f[f"beta_{k}"] = beta
+        f[f"lkp_{k}"] = beta * xp
+        f[f"lkn_{k}"] = beta * u[f"usn_{k}_r1"]
+    for c in u.columns:
+        f[c] = u[c].values
+    return f
+
+
+def build_frame(history, universe, market, us=None):
     segs = {"P": 0, "S": 1, "G": 2}
     meta = {u["sym"]: u for u in universe}
     sectors = sorted({u.get("sector") for u in universe if u.get("sector")})
     sec_id = {s: i for i, s in enumerate(sectors)}
     parts = []
+    jp_dates = sorted({d for b in history.values() for d in b.get("d", [])})
+    ut = us_table(us, jp_dates) if us else None
     for sym, b in history.items():
         if not b.get("d") or len(b["d"]) < 80:
             continue
-        f, fwd, turn = stock_features(b)
+        f, fwd, turn, fwd_o = stock_features(b)
+        if ut is not None:
+            f = add_us_links(f, ut)
         f["fwd"] = fwd.values
+        f["fwd_o"] = fwd_o.values
         f["turn"] = turn.values
         f["sym"] = sym
         u = meta.get(sym, {})
@@ -154,16 +213,26 @@ def build_frame(history, universe, market):
     return df, sectors
 
 
-FEATURES_EXCLUDE = {"date", "sym", "fwd", "turn", "ex", "ex_sec", "liquid"}
+FEATURES_EXCLUDE = {"date", "sym", "fwd", "turn", "ex", "ex_sec", "liquid", "fwd_o", "ex_o"}
 MARKET_COLS = ("n225_ret5", "n225_dev25", "vix")
+US_PREV, US_NIGHT = ("usp_", "lkp_", "beta_"), ("usn_", "lkn_")
 
 # 比較する設計。target: 'market'＝市場平均との差 / 'sector'＝同じ業種の平均との差（業種の当たり外れを除いて銘柄選びだけを学ぶ）
+# entry: 'close'＝その日の終値で買う想定 / 'open'＝翌朝の寄り付きで買う想定（前の晩の米国を見てから買える）
+# 米国の入力（us_*）は、指定した設計だけが使う
+NO_US = US_PREV + US_NIGHT
 VARIANTS = {
-    "A_all": {"target": "market", "drop": []},
-    "B_no_market": {"target": "market", "drop": list(MARKET_COLS)},
-    "C_no_market_sector": {"target": "market", "drop": list(MARKET_COLS) + ["sector"]},
-    "D_sector_neutral": {"target": "sector", "drop": list(MARKET_COLS)},
+    "A_all": {"target": "market", "drop": [], "drop_prefix": NO_US},
+    "B_no_market": {"target": "market", "drop": list(MARKET_COLS), "drop_prefix": NO_US},
+    "C_no_market_sector": {"target": "market", "drop": list(MARKET_COLS) + ["sector"], "drop_prefix": NO_US},
+    "D_sector_neutral": {"target": "sector", "drop": list(MARKET_COLS), "drop_prefix": NO_US},
+    # 2026-10 追加の比較：前の晩の米国市場（SOX・米銀行株・S&P500・ナスダック・ドル円・米10年金利）
+    "B_us_prev": {"target": "market", "drop": list(MARKET_COLS), "drop_prefix": US_NIGHT},
+    "B_open": {"target": "market", "entry": "open", "drop": list(MARKET_COLS), "drop_prefix": NO_US},
+    "B_open_us": {"target": "market", "entry": "open", "drop": list(MARKET_COLS), "drop_prefix": ()},
 }
+EXP_SETS = {"base": ["A_all", "B_no_market", "C_no_market_sector", "D_sector_neutral"],
+            "us": ["B_no_market", "B_us_prev", "B_open", "B_open_us"]}
 DEFAULT_VARIANT = os.environ.get("MODEL_VARIANT") or "B_no_market"  # 2026-10 の比較で最も安定（IC 0.077・上位2% +0.68%・月勝率86%）
 
 
@@ -172,6 +241,9 @@ def add_target(df):
     ok = liquid & df["fwd"].notna()
     m = df.loc[ok].groupby("date")["fwd"].mean()
     df["ex"] = (df["fwd"] - df["date"].map(m)).clip(-0.3, 0.3)
+    ok_o = liquid & df["fwd_o"].notna()
+    mo = df.loc[ok_o].groupby("date")["fwd_o"].mean()
+    df["ex_o"] = (df["fwd_o"] - df["date"].map(mo)).clip(-0.3, 0.3)
     ms = df.loc[ok].groupby(["date", "sector"])["fwd"].transform("mean")
     df["ex_sec"] = np.nan
     df.loc[ok, "ex_sec"] = (df.loc[ok, "fwd"] - ms).clip(-0.3, 0.3)
@@ -180,12 +252,19 @@ def add_target(df):
 
 
 def feature_cols(df, variant=None):
-    drop = set((variant or VARIANTS[DEFAULT_VARIANT])["drop"])
-    return [c for c in df.columns if c not in FEATURES_EXCLUDE and c not in drop]
+    v = variant or VARIANTS[DEFAULT_VARIANT]
+    drop, pre = set(v["drop"]), tuple(v.get("drop_prefix", NO_US))
+    return [c for c in df.columns if c not in FEATURES_EXCLUDE and c not in drop and not (pre and c.startswith(pre))]
 
 
 def label_col(variant):
+    if variant.get("entry") == "open":
+        return "ex_o"
     return "ex_sec" if variant["target"] == "sector" else "ex"
+
+
+def eval_cols(variant):
+    return ("ex_o", "fwd_o") if variant.get("entry") == "open" else ("ex", "fwd")
 
 
 def train(df_train, cols, label="ex"):
@@ -196,10 +275,13 @@ def train(df_train, cols, label="ex"):
     return lgb.train(PARAMS, ds, num_boost_round=ROUNDS)
 
 
-def evaluate(df, cols, label="ex", quiet=False):
+def evaluate(df, cols, label="ex", quiet=False, ev=("ex", "fwd")):
     """ウォークフォワード検証：学習に使っていない期間の成績（評価は常に「市場平均との差」）"""
     dates = np.array(sorted(df["date"].unique()))
-    usable = df[df["liquid"] & df["ex"].notna()]
+    usable = df[df["liquid"] & df[ev[0]].notna()].rename(columns={ev[0]: "_ev", ev[1]: "_evf"})
+    usable["ex"], usable["fwd"] = usable["_ev"], usable["_evf"]
+    if label == ev[0]:
+        label = "ex"
     n_days = len(dates)
     test_start = max(MIN_TRAIN_DAYS + H + 1, n_days - H - TEST_DAYS)
     preds = []
@@ -267,6 +349,9 @@ def main():
     history = load(args.history, {})
     universe = load(args.universe, {}).get("symbols", [])
     market = load(args.market, {})
+    # 米国の入力は、使う設計（比較のとき・本番の設計が米国を使うとき）だけ読み込む（日中の予測を遅くしないため）
+    need_us = args.experiment or tuple(VARIANTS[DEFAULT_VARIANT].get("drop_prefix", NO_US)) != NO_US
+    us = load(os.path.join(os.path.dirname(args.market), "us.json"), {}) if need_us else {}
     model_path = os.path.join(args.cache, f"model{suf}.txt")
     meta_path = os.path.join(args.cache, f"model_meta{suf}.json")
     predict_only = not args.train and not args.experiment and os.path.exists(model_path) \
@@ -274,13 +359,14 @@ def main():
     full_history = history
     if predict_only:  # 予測だけなら直近300営業日あれば足りる（52週高値などの計算に250日使う）
         history = {s: {k: v[-300:] for k, v in b.items()} for s, b in history.items()}
-    df, sectors = build_frame(history, universe, market)
+    df, sectors = build_frame(history, universe, market, us)
     df = add_target(df)
     if args.experiment:
         res = {}
-        for name, v in VARIANTS.items():
+        for name in EXP_SETS.get(os.environ.get("EXP_SET", "base"), EXP_SETS["base"]):
+            v = VARIANTS[name]
             t1 = time.time()
-            r = evaluate(df, feature_cols(df, v), label_col(v), quiet=True)
+            r = evaluate(df, feature_cols(df, v), label_col(v), quiet=True, ev=eval_cols(v))
             res[name] = {k: r[k] for k in ("ic", "icPositiveDays", "top2pct", "bottom2pct", "sectorConcentration", "positiveMonths")} | {"top20": r["top"][1]}
             print(f"EXP {name}: IC {r['ic']:.3f} top2% {r['top2pct']['excess'] * 100:+.2f}% win {r['top2pct']['win'] * 100:.0f}% "
                   f"top20 {r['top'][1]['excess'] * 100:+.2f}% 偏り {r['sectorConcentration'] * 100:.0f}% 月勝率 {r['positiveMonths'] * 100:.0f}% ({time.time() - t1:.0f}s)", flush=True)
@@ -299,7 +385,7 @@ def main():
         else:
             print("特徴量が変わったので学習し直します")
     if model is None and predict_only:  # 学び直しには全期間が要るので作り直す
-        df, sectors = build_frame(full_history, universe, market)
+        df, sectors = build_frame(full_history, universe, market, us)
         df = add_target(df)
         cols = feature_cols(df, variant)
     if model is None:

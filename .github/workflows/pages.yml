@@ -14,6 +14,9 @@ on:
         description: 'AI予測モデルの設計を比較する（時間がかかります）'
         type: boolean
         default: false
+      exp_set:
+        description: '比較する設計の組（base＝従来の4種 / us＝前の晩の米国市場）'
+        default: 'base'
   schedule:
     - cron: '17,47 0-6 * * 1-5'       # 予備（ふだんは live.yml が取引中10分ごとに起動する）
     - cron: '3 21 * * 0-4'            # 平日の朝 JST 6:03（3年分の取り直し・AI予測モデルの学習・決算予定日・財務・ニュース）
@@ -80,6 +83,7 @@ jobs:
         continue-on-error: true
         env:
           MODEL_VARIANT: ${{ vars.MODEL_VARIANT || 'B_no_market' }}
+          EXP_SET: ${{ inputs.exp_set || 'base' }}
         run: |
           set -o pipefail
           TRAIN=$(python -c "import json;m=json.load(open('raw/fetch_meta.json'));print('--train' if m['history']['mode']=='full' else '')")
@@ -128,6 +132,13 @@ jobs:
           SITE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
           NODE_OPTIONS: --max-old-space-size=6144
         run: node scripts/build_data.mjs --raw raw --prev prev --out data
+
+      - name: 適時開示（TDnet）を書き出す
+        if: steps.fetch.outcome == 'success'
+        continue-on-error: true
+        run: |
+          git fetch -q --depth 1 origin tdnet && mkdir -p tdnet && git archive origin/tdnet | tar -x -C tdnet \
+            && python scripts/tdnet.py --repo tdnet --export data/tdnet.json --since-days 45
 
       - name: 状態を data ブランチに保存（日足は含めない・最新1コミットのみ）
         if: steps.fetch.outcome == 'success'
