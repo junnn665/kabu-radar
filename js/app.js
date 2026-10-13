@@ -150,7 +150,7 @@ const nameOf = (s) => state.universe?.get(s)?.name || state.quotes[s]?.name || s
 
 async function loadServer() {
   if (!state.provider.static) { state.server = {}; return; }
-  const files = ['screener', 'backtest', 'paper', 'paper_ai', 'news', 'ai', 'meta', 'market', 'review', 'model', 'model20', 'ai_reasons', 'ai_track', 'dividends'];
+  const files = ['screener', 'backtest', 'paper', 'paper_ai', 'news', 'ai', 'meta', 'market', 'review', 'model', 'model20', 'ai_reasons', 'ai_track', 'dividends', 'tdnet'];
   if (!state.universe) {
     try {
       const u = await state.provider.json('universe.json', { fresh: true });
@@ -401,7 +401,17 @@ function eventBadges(s) {
   if (dx != null && dx >= 0 && dx <= 14) out.push({ days: dx, kind: 'div', text: `権利落ち${dx === 0 ? '今日' : `${dx}日後`}${e.exDivEstimated ? '(推定)' : ''}` });
   return out;
 }
-const eventChips = (s) => eventBadges(s).map((b) => `<span class="ev ${b.days <= 3 ? 'hot' : ''}">${b.kind === 'earn' ? '📅' : '💰'} ${esc(b.text)}</span>`).join('');
+// 適時開示（TDnet）：株価が動きやすい開示だけ
+const TD_CAT = {
+  up: { label: '上方修正', tone: 'good' }, down: { label: '下方修正', tone: 'bad' }, buyback: { label: '自社株買い', tone: 'good' },
+  divup: { label: '増配', tone: 'good' }, divdown: { label: '減配', tone: 'bad' }, split: { label: '株式分割', tone: 'good' },
+  tob: { label: 'TOB', tone: 'hot' }, revise: { label: '業績予想の修正', tone: '' }, earnings: { label: '決算', tone: '' },
+};
+const disclosuresOf = (s) => state.server.tdnet?.items?.[s] || [];
+const daysSince = (d) => -daysUntil(d);
+const recentDisclosures = (s, days = 5) => disclosuresOf(s).filter(([d, , c]) => daysSince(d) <= days && TD_CAT[c] && c !== 'earnings' && c !== 'revise');
+const eventChips = (s) => recentDisclosures(s).slice(0, 2).map(([, , c]) => `<span class="ev td ${TD_CAT[c].tone}">📢 ${TD_CAT[c].label}</span>`).join('')
+  + eventBadges(s).map((b) => `<span class="ev ${b.days <= 3 ? 'hot' : ''}">${b.kind === 'earn' ? '📅' : '💰'} ${esc(b.text)}</span>`).join('');
 
 const PERF_TABS = ['review', 'paper', 'backtest'];
 function render() {
@@ -601,6 +611,14 @@ function renderDetail() {
 
   renderMemos(s);
 
+  // 適時開示
+  const tds = disclosuresOf(s).slice(0, 8);
+  const base = state.server.tdnet?.base || 'https://www.release.tdnet.info/inbs/';
+  $('#d-tdnet').innerHTML = tds.length
+    ? tds.map(([d, tm, c, title, pdf]) => `<li><span class="ev td ${TD_CAT[c]?.tone || ''}">${esc(TD_CAT[c]?.label || 'その他')}</span>
+        ${pdf ? `<a href="${esc(base + pdf)}" target="_blank" rel="noopener">${esc(title)}</a>` : esc(title)}<small>${+d.slice(5, 7)}/${+d.slice(8, 10)} ${esc(tm)}</small></li>`).join('')
+    : `<li class="muted">${state.server.tdnet ? '直近45日に、株価に関係しやすい開示はありません' : '適時開示は自動取得データのモードで表示されます'}</li>`;
+
   // ニュース
   const ns = newsOf(s);
   $('#d-news').innerHTML = ns.length
@@ -799,6 +817,7 @@ function holdingView(h) {
   if (lv && price != null && price <= lv.stop) warns.push({ hot: true, text: `損切りライン ${fmt(lv.stop)} 割れ` });
   if (lv && price != null && price >= lv.target) warns.push({ text: `利確目安 ${fmt(lv.target)} 到達` });
   for (const b of eventBadges(h.sym)) if (b.days <= 7) warns.push({ hot: b.days <= 3, text: b.text });
+  for (const [d, , c] of recentDisclosures(h.sym, 7)) warns.push({ hot: TD_CAT[c].tone === 'bad', text: `${TD_CAT[c].label}の開示（${+d.slice(5, 7)}/${+d.slice(8, 10)}）` });
   return { ...h, price, manual, cur, value, pnl, pnlPct: price != null ? price / h.cost - 1 : null, lv, a, ai, warns };
 }
 

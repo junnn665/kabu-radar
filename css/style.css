@@ -454,3 +454,7 @@ table.compact td, table.compact th { padding: 6px 10px; }
 .memo-meta { display: flex; flex-wrap: wrap; gap: 8px; font-size: 11px; color: var(--muted); padding-right: 48px; }
 .memo-meta .up { color: var(--up); } .memo-meta .down { color: var(--down); }
 [hidden] { display: none !important; }
+.ev.td.good { color: var(--up); border-color: currentColor; }
+.ev.td.bad { color: var(--down); border-color: currentColor; }
+.ev.td.hot { color: #111; background: #fb923c; border-color: #fb923c; }
+#d-tdnet .ev { margin-right: 4px; }
