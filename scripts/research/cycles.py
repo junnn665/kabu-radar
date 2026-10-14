@@ -169,6 +169,15 @@ def main():
           f" / 周期売買の的中率 {res['cycleTrading']['hitRate']:.3f}（{res['cycleTrading']['n']}回）"
           f" / 月別の前半後半の相関 {res['seasonality']['monthCorrHalves']:.2f}"
           f" / 権利取り前10日 {res['exDividend']['preMeanPct']:+.2f}% 後10日 {res['exDividend']['postMeanPct']:+.2f}%")
+    t = next((x for x in sp if x["sym"] == "7203"), None)
+    by = {k: v for k, v in res["cycleTrading"]["bySymbol"].items() if v is not None}
+    best = sorted(by.items(), key=lambda kv: -kv[1])[:3]
+    print(f"DETAIL トヨタ: 最も強い周期 {t['peakDays']}日（偶然の{t['power']:.2f}倍・有意={t['significant']}）前半 {t['peakFirstHalf']}日 後半 {t['peakSecondHalf']}日 / 周期売買の的中率 {by.get('7203', 0):.3f}"
+          f" / 的中率が高い銘柄 " + " ".join(f"{LARGE[k]}{v:.2f}" for k, v in best) + f" / 最低 {min(by.values()):.2f}")
+    mp = res["seasonality"]["monthPct"]
+    print("MONTH " + " ".join(f"{m}月:{a:+.1f}/{b:+.1f}" for m, (a, b) in mp.items()))
+    print("DOW " + " ".join(f"{'月火水木金'[w]}:{a:+.3f}/{b:+.3f}" for w, (a, b) in res["seasonality"]["dowPct"].items() if w < 5))
+    print("EXDIV " + json.dumps(res["exDividend"]["byYear"]) + f" 勝率 {res['exDividend']['preWin']:.2f} n={res['exDividend']['n']}")
     print("AUTOCORR " + " ".join(f"{k}日:{v['meanCorr']:+.3f}({v['negative']}/{v['n']})" for k, v in res["autocorr"].items()))
 
 
