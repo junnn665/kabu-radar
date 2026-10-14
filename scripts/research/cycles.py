@@ -156,7 +156,10 @@ def main():
     close = load()
     print(f"{close.shape[1]}銘柄 {close.index[0].date()}〜{close.index[-1].date()}（{len(close)}日）", flush=True)
     lr = np.log(close).diff()
+    # 株式分割などでデータが飛んでいる日（1日で±25%超）は除く
+    lr = lr.where(lr.abs() < 0.25)
     ex = lr.sub(lr["1306"], axis=0)
+    print("除いた日数: " + " ".join(f"{c}:{int(n)}" for c, n in (np.log(close).diff().abs() >= 0.25).sum().items() if n), flush=True)
     res = {"period": [str(close.index[0].date()), str(close.index[-1].date())], "days": len(close)}
     res["spectral"] = spectral(ex)
     res["autocorr"] = autocorr(ex)
