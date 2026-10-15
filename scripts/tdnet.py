@@ -74,6 +74,7 @@ def get(url):
 def parse_revision(htm):
     """業績予想の修正（tse-rvfc）の XBRL から「前回予想→今回予想」と変化率を取り出す"""
     vals = {}
+    htm = re.sub(r"<ix:nonFraction[^>]*/>", "", htm)  # 値の無いタグ（xsi:nil）は自己終了なので先に除く
     for attrs, text in FACT.findall(htm):
         a = dict(ATTR.findall(attrs))
         m = CTX.match(a.get("contextRef", ""))
