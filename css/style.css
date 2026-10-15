@@ -479,3 +479,6 @@ div.hm-t:hover { outline: none; }
 .hm-legend { display: flex; align-items: center; gap: 2px; margin-top: 6px; flex-wrap: wrap; }
 .hm-legend span { font-size: 10px; padding: 2px 6px; border-radius: 3px; color: var(--text); font-family: "IBM Plex Mono", monospace; min-width: 30px; text-align: center; }
 .hm-legend small { margin-left: 6px; font-size: 10px; }
+#d-tdnet .rev { font-size: 12px; margin-top: 2px; font-family: "IBM Plex Mono", monospace; }
+#d-tdnet .rev.up { color: var(--up); }
+#d-tdnet .rev.down { color: var(--down); }

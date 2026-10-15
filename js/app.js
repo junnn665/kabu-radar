@@ -410,8 +410,17 @@ const TD_CAT = {
 };
 const disclosuresOf = (s) => state.server.tdnet?.items?.[s] || [];
 const daysSince = (d) => -daysUntil(d);
+// 業績予想の修正：「通期 営業利益 前回予想比 +23%」
+const revText = (rev, long = false) => {
+  if (!rev) return '';
+  const pc = rev.pct != null ? `${rev.pct > 0 ? '+' : ''}${(rev.pct * 100).toFixed(Math.abs(rev.pct) < 0.1 ? 1 : 0)}%` : '';
+  if (!long) return pc;
+  const n = (v) => (v == null ? '—' : v.toLocaleString('ja-JP'));
+  return `${rev.p}の${rev.m} ${n(rev.prev)}→${n(rev.cur)}${pc ? `（前回予想比 ${pc}）` : ''}${rev.sales != null && rev.m !== '売上高' ? `・売上高 ${rev.sales > 0 ? '+' : ''}${(rev.sales * 100).toFixed(1)}%` : ''}`;
+};
+const tdLabel = (c, rev) => `${TD_CAT[c]?.label || 'その他'}${(c === 'up' || c === 'down') && rev?.pct != null ? ` ${revText(rev)}` : ''}`;
 const recentDisclosures = (s, days = 5) => disclosuresOf(s).filter(([d, , c]) => daysSince(d) <= days && TD_CAT[c] && c !== 'earnings' && c !== 'revise');
-const eventChips = (s) => recentDisclosures(s).slice(0, 2).map(([, , c]) => `<span class="ev td ${TD_CAT[c].tone}">📢 ${TD_CAT[c].label}</span>`).join('')
+const eventChips = (s) => recentDisclosures(s).slice(0, 2).map(([, , c, , , rev]) => `<span class="ev td ${TD_CAT[c].tone}">📢 ${esc(tdLabel(c, rev))}</span>`).join('')
   + eventBadges(s).map((b) => `<span class="ev ${b.days <= 3 ? 'hot' : ''}">${b.kind === 'earn' ? '📅' : '💰'} ${esc(b.text)}</span>`).join('');
 
 const PERF_TABS = ['review', 'paper', 'backtest'];
@@ -699,8 +708,8 @@ function renderDetail() {
   const tds = disclosuresOf(s).slice(0, 8);
   const base = state.server.tdnet?.base || 'https://www.release.tdnet.info/inbs/';
   $('#d-tdnet').innerHTML = tds.length
-    ? tds.map(([d, tm, c, title, pdf]) => `<li><span class="ev td ${TD_CAT[c]?.tone || ''}">${esc(TD_CAT[c]?.label || 'その他')}</span>
-        ${pdf ? `<a href="${esc(base + pdf)}" target="_blank" rel="noopener">${esc(title)}</a>` : esc(title)}<small>${+d.slice(5, 7)}/${+d.slice(8, 10)} ${esc(tm)}</small></li>`).join('')
+    ? tds.map(([d, tm, c, title, pdf, rev]) => `<li><span class="ev td ${TD_CAT[c]?.tone || ''}">${esc(tdLabel(c, rev))}</span>
+        ${pdf ? `<a href="${esc(base + pdf)}" target="_blank" rel="noopener">${esc(title)}</a>` : esc(title)}${rev ? `<div class="rev ${rev.pct > 0 ? 'up' : rev.pct < 0 ? 'down' : ''}">${esc(revText(rev, true))}</div>` : ''}<small>${+d.slice(5, 7)}/${+d.slice(8, 10)} ${esc(tm)}</small></li>`).join('')
     : `<li class="muted">${state.server.tdnet ? '直近45日に、株価に関係しやすい開示はありません' : '適時開示は自動取得データのモードで表示されます'}</li>`;
 
   // ニュース
@@ -806,7 +815,10 @@ const FUNDA_FILTERS = {
   div: { label: '高配当（利回り3%以上）', test: (r) => r.divYield >= 0.03 },
   pbr: { label: '割安（PBR1倍未満）', test: (r) => r.pbr != null && r.pbr < 1 },
   per: { label: '割安（PER15倍未満）', test: (r) => r.per != null && r.per < 15 },
-  divdip: { label: '高配当×売られすぎ', test: (r) => r.divYield >= 0.03 && r.ids.some((id) => ['rsi_oversold', 'rsi_low', 'bb_lower'].includes(id)) },
+  divdip: { label: '高配当×売られすぎ', test: (r) => r.divYield >= 0.03 && r.ids.some((id) => ['short_oversold', 'bb_lower', 'dip_in_uptrend', 'sharp_drop'].includes(id)) },
+  revup: { label: '業績の上方修正（30日以内）', test: (r) => disclosuresOf(r.sym).some(([d, , c]) => c === 'up' && daysSince(d) <= 30) },
+  revdown: { label: '業績の下方修正（30日以内）', test: (r) => disclosuresOf(r.sym).some(([d, , c]) => c === 'down' && daysSince(d) <= 30) },
+  buyback: { label: '自社株買いの発表（30日以内）', test: (r) => disclosuresOf(r.sym).some(([d, , c]) => c === 'buyback' && daysSince(d) <= 30) },
   value: { label: '割安×上昇トレンド', test: (r) => ((r.pbr != null && r.pbr < 1.2) || (r.per != null && r.per < 15)) && r.ids.includes('uptrend') },
 };
 
@@ -901,7 +913,7 @@ function holdingView(h) {
   if (lv && price != null && price <= lv.stop) warns.push({ hot: true, text: `損切りライン ${fmt(lv.stop)} 割れ` });
   if (lv && price != null && price >= lv.target) warns.push({ text: `利確目安 ${fmt(lv.target)} 到達` });
   for (const b of eventBadges(h.sym)) if (b.days <= 7) warns.push({ hot: b.days <= 3, text: b.text });
-  for (const [d, , c] of recentDisclosures(h.sym, 7)) warns.push({ hot: TD_CAT[c].tone === 'bad', text: `${TD_CAT[c].label}の開示（${+d.slice(5, 7)}/${+d.slice(8, 10)}）` });
+  for (const [d, , c, , , rev] of recentDisclosures(h.sym, 7)) warns.push({ hot: TD_CAT[c].tone === 'bad', text: `${tdLabel(c, rev)}の開示（${+d.slice(5, 7)}/${+d.slice(8, 10)}）` });
   return { ...h, price, manual, cur, value, pnl, pnlPct: price != null ? price / h.cost - 1 : null, lv, a, ai, warns };
 }
 

@@ -7,6 +7,10 @@ on:
       days:
         description: '何日さかのぼって取得するか（初回は31）'
         default: '3'
+      refresh:
+        description: '取得済みの日も取り直す（業績修正の数字の後付け）'
+        type: boolean
+        default: false
   schedule:
     - cron: '40 10 * * 1-5'   # JST 19:40（平日。開示は15時〜17時台に多い）
     - cron: '50 22 * * 0-4'   # JST 7:50（前日の夜の分）
@@ -31,7 +35,7 @@ jobs:
         run: |
           git clone -q --depth 1 -b tdnet "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" tdnet 2>/dev/null \
             || (mkdir tdnet && cd tdnet && git init -q -b tdnet)
-          python scripts/tdnet.py --repo tdnet --days ${{ inputs.days || '3' }} 2>&1 | tee tdnet.log
+          python scripts/tdnet.py --repo tdnet --days ${{ inputs.days || '3' }} ${{ inputs.refresh && '--refresh' || '' }} 2>&1 | tee tdnet.log
           echo "::notice title=TDnet::$(tail -n 1 tdnet.log)"
       - name: 保存
         run: |
