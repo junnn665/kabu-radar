@@ -9,6 +9,7 @@ import { marketOf } from './market.js';
 import { computeReview } from './review.js';
 import { decodeCsv, parseCsvText, extractHoldings } from './csvimport.js';
 import { dividendPlan, concentration, upcoming, TAX } from './portfolio.js';
+import { squarify } from './treemap.js';
 
 const DEFAULT_REPO = 'junnn665/kabu-radar';
 
@@ -459,9 +460,92 @@ function fundaLine(s) {
 
 function renderWatch() {
   renderRegime();
+  renderHeatmap();
   renderPicks();
   renderTable();
 }
+
+// ---------- 相場マップ（ヒートマップ）----------
+// 業種ごとに区切り、各銘柄の大きさ＝売買代金（20日平均）、色＝今日の値動き／AI予測。業種ごとに売買代金の大きい12銘柄、残りは「他」にまとめる
+const HM_MODES = {
+  chg: { label: '今日の値動き', get: (r) => r.changePct, scale: 3, unit: '%' },
+  ai5: { label: 'AI 1週間先', get: (r) => r.pred, scale: 1.5, unit: '%' },
+  ai20: { label: 'AI 1か月先', get: (r) => r.pred20, scale: 4, unit: '%' },
+};
+function hmColor(v, scale) {
+  if (v == null || !Number.isFinite(v)) return 'var(--hm-mid)';
+  const t = Math.max(-1, Math.min(1, v / scale));
+  const k = Math.round(Math.abs(t) * 80 + (Math.abs(t) > 0.02 ? 12 : 0));
+  return `color-mix(in srgb, var(${t >= 0 ? '--up' : '--down'}) ${k}%, var(--hm-mid))`;
+}
+function renderHeatmap() {
+  const sec = $('#hmap-sec');
+  const rows = (state.server.screener?.rows || []).filter((r) => r.liquid && r.turnover > 0 && r.sector);
+  sec.hidden = rows.length < 50;
+  if (sec.hidden) return;
+  const hasAI = rows.some((r) => r.pred != null), has20 = rows.some((r) => r.pred20 != null);
+  let mode = state.settings.hmMode || 'chg';
+  if ((mode === 'ai5' && !hasAI) || (mode === 'ai20' && !has20)) mode = 'chg';
+  $('#hm-mode').querySelectorAll('[data-hm]').forEach((b) => {
+    b.classList.toggle('on', b.dataset.hm === mode);
+    b.hidden = (b.dataset.hm === 'ai5' && !hasAI) || (b.dataset.hm === 'ai20' && !has20);
+  });
+  const M = HM_MODES[mode];
+  const box = $('#hmap');
+  const W = box.clientWidth || 360;
+  const H = Math.round(Math.min(680, Math.max(360, W * (W < 600 ? 1.25 : 0.62))));
+  box.style.height = `${H}px`;
+  // 業種ごと
+  const bySec = new Map();
+  for (const r of rows) { if (!bySec.has(r.sector)) bySec.set(r.sector, []); bySec.get(r.sector).push(r); }
+  const secs = [...bySec].map(([name, rs]) => {
+    rs.sort((a, b) => b.turnover - a.turnover);
+    const value = rs.reduce((t, r) => t + r.turnover, 0);
+    const wavg = (f) => { let s = 0, w = 0; for (const r of rs) { const v = f(r); if (v != null && Number.isFinite(v)) { s += v * r.turnover; w += r.turnover; } } return w ? s / w : null; };
+    const top = rs.slice(0, 12), rest = rs.slice(12);
+    const items = top.map((r) => ({ value: r.turnover, r }));
+    if (rest.length) {
+      const rv = rest.reduce((t, r) => t + r.turnover, 0);
+      let s = 0, w = 0;
+      for (const r of rest) { const v = M.get(r); if (v != null && Number.isFinite(v)) { s += v * r.turnover; w += r.turnover; } }
+      items.push({ value: rv, other: rest.length, v: w ? s / w : null });
+    }
+    return { value, name, items, avg: wavg(M.get) };
+  });
+  const gap = 2, head = 15;
+  const html = [];
+  for (const sct of squarify(secs, 0, 0, W, H)) {
+    const showHead = sct.w > 56 && sct.h > 40;
+    const top = showHead ? head : 0;
+    html.push(`<div class="hm-sec" style="left:${sct.x}px;top:${sct.y}px;width:${sct.w}px;height:${sct.h}px">${showHead
+      ? `<div class="hm-head"><span>${esc(sct.name)}</span><b class="mono">${sct.avg != null ? signedPct(sct.avg) : ''}</b></div>` : ''}</div>`);
+    for (const t of squarify(sct.items, sct.x + gap / 2, sct.y + top + gap / 2, sct.w - gap, sct.h - top - gap)) {
+      const v = t.r ? M.get(t.r) : t.v;
+      const w = t.w - gap, h = t.h - gap;
+      if (w <= 0 || h <= 0) continue;
+      const name = t.r ? t.r.name : `他${t.other}銘柄`;
+      const label = w > 46 && h > 30 ? `<span class="hm-n">${esc(name)}</span><span class="hm-v mono">${v != null ? signedPct(v) : '—'}</span>`
+        : w > 30 && h > 16 ? `<span class="hm-v mono">${v != null ? (Math.abs(v) < 0.5 ? '0%' : signedPct(v, 0)) : ''}</span>` : '';
+      const big = w > 110 && h > 60 ? ' big' : '';
+      html.push(`<${t.r ? `button data-scr="${esc(t.r.sym)}"` : 'div'} class="hm-t${big}" style="left:${t.x + gap / 2}px;top:${t.y + gap / 2}px;width:${w}px;height:${h}px;background:${hmColor(v, M.scale)}"
+        title="${esc(`${name}${t.r ? `（${t.r.sym}）` : ''}  ${M.label} ${v != null ? signedPct(v, 2) : '—'}`)}">${label}</${t.r ? 'button' : 'div'}>`);
+    }
+  }
+  box.innerHTML = html.join('');
+  $('#hm-note').textContent = mode === 'chg' ? '大きさ＝売買代金・色＝今日の値動き' : `大きさ＝売買代金・色＝AI予測（市場平均との差）`;
+  const steps = [-1, -0.66, -0.33, 0, 0.33, 0.66, 1];
+  $('#hm-legend').innerHTML = steps.map((k) => `<span style="background:${hmColor(k * M.scale, M.scale)}">${k === 0 ? '0' : `${k > 0 ? '+' : '−'}${+(Math.abs(k) * M.scale).toFixed(1)}`}</span>`).join('')
+    + `<small class="muted">${M.unit}（±${M.scale}%で最も濃い色）</small>`;
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-hm]');
+  if (!b) return;
+  state.settings.hmMode = b.dataset.hm;
+  save();
+  renderHeatmap();
+});
+let hmResize;
+window.addEventListener('resize', () => { clearTimeout(hmResize); hmResize = setTimeout(() => { if (state.settings.tab === 'watch') renderHeatmap(); }, 200); });
 
 const reasonChips = (s, n = 2) => (state.server.ai_reasons?.reasons?.[s] || []).filter((r) => r[1] > 0).slice(0, n)
   .map(([k, , v]) => `<span class="chip-soft">${esc(FEATURE_JA[k] || k)}${reasonValue(k, v) ? `：${esc(reasonValue(k, v))}` : ''}</span>`).join('');

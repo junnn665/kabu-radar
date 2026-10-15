@@ -458,3 +458,24 @@ table.compact td, table.compact th { padding: 6px 10px; }
 .ev.td.bad { color: var(--down); border-color: currentColor; }
 .ev.td.hot { color: #111; background: #fb923c; border-color: #fb923c; }
 #d-tdnet .ev { margin-right: 4px; }
+
+/* ---- 相場マップ ---- */
+:root { --hm-mid: #2B323C; }
+.seg.hm-seg { grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 4px 0 8px; }
+.seg.hm-seg button { height: 32px; font-size: 12px; }
+.hmap { position: relative; width: 100%; border-radius: 10px; overflow: hidden; background: var(--bg); }
+.hm-sec { position: absolute; box-sizing: border-box; border: 1px solid var(--bg); }
+.hm-head { display: flex; justify-content: space-between; gap: 4px; font-size: 10px; line-height: 15px; padding: 0 4px; color: var(--muted); white-space: nowrap; overflow: hidden; }
+.hm-head span { overflow: hidden; text-overflow: ellipsis; }
+.hm-head b { color: var(--text); font-weight: 500; }
+.hm-t { position: absolute; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; padding: 2px; border: 0; border-radius: 3px; color: var(--text); overflow: hidden; cursor: pointer; font: inherit; text-align: center; }
+.hm-t:hover { outline: 2px solid var(--text); outline-offset: -2px; z-index: 1; }
+div.hm-t { cursor: default; }
+div.hm-t:hover { outline: none; }
+.hm-n { font-size: 10px; line-height: 1.15; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 1px 2px rgba(0,0,0,0.5); }
+.hm-v { font-size: 10px; line-height: 1.1; text-shadow: 0 1px 2px rgba(0,0,0,0.5); }
+.hm-t.big .hm-n { font-size: 13px; font-weight: 700; }
+.hm-t.big .hm-v { font-size: 12px; }
+.hm-legend { display: flex; align-items: center; gap: 2px; margin-top: 6px; flex-wrap: wrap; }
+.hm-legend span { font-size: 10px; padding: 2px 6px; border-radius: 3px; color: var(--text); font-family: "IBM Plex Mono", monospace; min-width: 30px; text-align: center; }
+.hm-legend small { margin-left: 6px; font-size: 10px; }

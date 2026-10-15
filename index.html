@@ -43,6 +43,13 @@
     <!-- 監視 -->
     <div id="view-watch" class="view">
       <section id="regime" class="regime"></section>
+      <section id="hmap-sec" hidden>
+        <div class="sec-title"><h2>相場マップ</h2><span class="muted small" id="hm-note">大きさ＝売買代金</span></div>
+        <div id="hm-mode" class="seg hm-seg" role="tablist"><button data-hm="chg">今日の値動き</button><button data-hm="ai5">AI 1週間先</button><button data-hm="ai20">AI 1か月先</button></div>
+        <div id="hmap" class="hmap" role="img" aria-label="業種別・銘柄別の値動きのマップ"></div>
+        <div id="hm-legend" class="hm-legend"></div>
+      </section>
+
       <section>
         <div class="sec-title"><h2 id="picks-title">今日のAIピック</h2><span id="picks-sub" class="muted small">5日後に市場平均を上回る予測</span></div>
         <div id="hz" class="seg hz" role="tablist" hidden><button data-h="5">1週間先</button><button data-h="20">1か月先</button></div>
