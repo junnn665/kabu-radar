@@ -413,7 +413,11 @@ const daysSince = (d) => -daysUntil(d);
 // 業績予想の修正：「通期 営業利益 前回予想比 +23%」
 const revText = (rev, long = false) => {
   if (!rev) return '';
-  const pc = rev.pct != null ? `${rev.pct > 0 ? '+' : ''}${(rev.pct * 100).toFixed(Math.abs(rev.pct) < 0.1 ? 1 : 0)}%` : '';
+  const { prev, cur } = rev;
+  const pc = prev != null && cur != null && prev > 0 && cur < 0 ? '赤字転落'
+    : prev != null && cur != null && prev < 0 && cur > 0 ? '黒字転換'
+      : prev != null && cur != null && prev < 0 && cur < 0 ? (cur < prev ? '赤字拡大' : '赤字縮小')
+        : rev.pct != null ? `${rev.pct > 0 ? '+' : ''}${(rev.pct * 100).toFixed(Math.abs(rev.pct) < 0.1 ? 1 : 0)}%` : '';
   if (!long) return pc;
   const n = (v) => (v == null ? '—' : v.toLocaleString('ja-JP'));
   return `${rev.p}の${rev.m} ${n(rev.prev)}→${n(rev.cur)}${pc ? `（前回予想比 ${pc}）` : ''}${rev.sales != null && rev.m !== '売上高' ? `・売上高 ${rev.sales > 0 ? '+' : ''}${(rev.sales * 100).toFixed(1)}%` : ''}`;
