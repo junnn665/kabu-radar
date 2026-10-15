@@ -28,6 +28,8 @@ jobs:
           pip install --quiet -r requirements.txt 2>&1 | tail -3
           python -W ignore scripts/research/${{ inputs.script }}.py --out result.json 2>&1 | tee run.log
           grep -E "^(SUMMARY|AUTOCORR|DETAIL|MONTH|DOW|EXDIV)" run.log | while read -r l; do echo "::notice title=結果::$l"; done
+          # 調査の生ログ（PROBE 行）は 3500 文字ずつまとめて表示
+          python -c "import sys;t=' ‖ '.join(l.strip()[6:] for l in open('run.log') if l.startswith('PROBE'));[print('::notice title=probe'+str(i)+'::'+t[j:j+3500]) for i,j in enumerate(range(0,len(t),3500)) if i<9]"
       - uses: actions/upload-artifact@v5
         with:
           name: research-${{ inputs.script }}
