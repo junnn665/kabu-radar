@@ -482,3 +482,13 @@ div.hm-t:hover { outline: none; }
 #d-tdnet .rev { font-size: 12px; margin-top: 2px; font-family: "IBM Plex Mono", monospace; }
 #d-tdnet .rev.up { color: var(--up); }
 #d-tdnet .rev.down { color: var(--down); }
+/* 相場マップ v2：2段階（業種 → 銘柄）、文字はマスの大きさに合わせる */
+.hm-t { padding: 3px 4px; gap: 2px; }
+.hm-n { font-size: var(--fs, 11px); font-weight: 700; line-height: 1.2; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; }
+.hm-v { font-size: calc(var(--fs, 11px) * 0.9); }
+.hm-s { display: flex; flex-direction: column; gap: 1px; margin-top: 3px; font-size: 10px; line-height: 1.25; opacity: 0.85; max-width: 100%; }
+.hm-s i { font-style: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hm-s b { font-weight: 500; }
+.hm-crumb { display: flex; align-items: center; gap: 8px; min-height: 28px; margin-bottom: 6px; font-size: 13px; }
+.hm-crumb .mono { font-size: 13px; }
+.hm-back { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 99px; padding: 3px 10px; font-size: 12px; }

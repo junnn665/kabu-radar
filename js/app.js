@@ -491,6 +491,32 @@ function hmColor(v, scale) {
   const k = Math.round(Math.abs(t) * 80 + (Math.abs(t) > 0.02 ? 12 : 0));
   return `color-mix(in srgb, var(${t >= 0 ? '--up' : '--down'}) ${k}%, var(--hm-mid))`;
 }
+// 社名を短く（タイルに収まるように）
+const shortName = (n) => String(n || '')
+  .replace(/フィナンシャル・?グループ|フィナンシャルグループ/g, 'FG').replace(/ホールディングス|ホールディング/g, 'HD')
+  .replace(/グループ$/, 'G').replace(/コーポレーション|株式会社|（株）|\(株\)/g, '').replace(/[ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺａ-ｚ０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+  .replace(/　/g, ' ').trim();
+const SECTOR_SHORT = { 'ガラス・土石製品': 'ガラス土石', '証券、商品先物取引業': '証券', '石油・石炭製品': '石油石炭', '電気・ガス業': '電気ガス',
+  'パルプ・紙': '紙パ', '倉庫・運輸関連業': '倉庫運輸', '水産・農林業': '水産農林', '情報・通信業': '情報通信', 'その他金融業': 'その他金融' };
+const shortSector = (s) => SECTOR_SHORT[s] || String(s || '').replace(/・/g, '').replace(/業$/, '');
+// 面積が小さすぎて読めないものは「他」にまとめる（大きい順に、最低面積を満たす間だけ個別に出す）
+function fitItems(list, area, minA, maxN = 40) {
+  const total = list.reduce((t, x) => t + x.value, 0) || 1;
+  const shown = [], rest = [];
+  for (const x of list) (shown.length < maxN && (x.value / total) * area >= minA ? shown : rest).push(x);
+  return { shown, rest };
+}
+const wavgOf = (rs, get) => { let s = 0, w = 0; for (const r of rs) { const v = get(r); if (v != null && Number.isFinite(v)) { s += v * r.turnover; w += r.turnover; } } return w ? s / w : null; };
+function tileHtml({ x, y, w, h, bg, name, value, attrs, sub, tip }) {
+  // 1行に収まる大きさ → 無理なら2行に折り返す大きさ（名前2行＋数字1行がマスに収まるように）
+  const len = Math.max(2, [...name].length), iw = w - 8, ih = h - 6;
+  const one = Math.min(iw / len, ih / 2.6), two = Math.min(iw / Math.ceil(len / 2), ih / 3.8);
+  const fs = Math.floor(Math.max(9, Math.min(15, one >= 10 ? one : Math.max(one, two))));
+  const showName = w >= 34 && h >= 24, showVal = h >= (showName ? 34 : 16) && w >= 30;
+  return `<${attrs ? `button ${attrs}` : 'div'} class="hm-t" style="left:${x}px;top:${y}px;width:${w}px;height:${h}px;background:${bg};--fs:${fs}px" title="${esc(tip)}">
+    ${showName ? `<span class="hm-n">${esc(name)}</span>` : ''}${showVal ? `<span class="hm-v mono">${value}</span>` : ''}${sub && h > 90 && w > 90 ? `<span class="hm-s">${sub}</span>` : ''}</${attrs ? 'button' : 'div'}>`;
+}
+
 function renderHeatmap() {
   const sec = $('#hmap-sec');
   const rows = (state.server.screener?.rows || []).filter((r) => r.liquid && r.turnover > 0 && r.sector);
@@ -504,59 +530,87 @@ function renderHeatmap() {
     b.hidden = (b.dataset.hm === 'ai5' && !hasAI) || (b.dataset.hm === 'ai20' && !has20);
   });
   const M = HM_MODES[mode];
+  const fmtV = (v) => (v == null ? '—' : Math.abs(v) < 0.05 ? '0.0%' : signedPct(v));
   const box = $('#hmap');
   const W = box.clientWidth || 360;
-  const H = Math.round(Math.min(680, Math.max(360, W * (W < 600 ? 1.25 : 0.62))));
+  const H = Math.round(Math.min(620, Math.max(340, W * (W < 600 ? 1.05 : 0.55))));
   box.style.height = `${H}px`;
-  // 業種ごと
+  const minA = W < 600 ? 1500 : 2200; // これより小さいマスは名前が読めないので「他」へ
+  // 大きさは売買代金の平方根（1銘柄が画面の大半を占めないように）
+  const size = (t) => Math.sqrt(t);
   const bySec = new Map();
   for (const r of rows) { if (!bySec.has(r.sector)) bySec.set(r.sector, []); bySec.get(r.sector).push(r); }
-  const secs = [...bySec].map(([name, rs]) => {
-    rs.sort((a, b) => b.turnover - a.turnover);
-    const value = rs.reduce((t, r) => t + r.turnover, 0);
-    const wavg = (f) => { let s = 0, w = 0; for (const r of rs) { const v = f(r); if (v != null && Number.isFinite(v)) { s += v * r.turnover; w += r.turnover; } } return w ? s / w : null; };
-    const top = rs.slice(0, 12), rest = rs.slice(12);
-    const items = top.map((r) => ({ value: r.turnover, r }));
-    if (rest.length) {
-      const rv = rest.reduce((t, r) => t + r.turnover, 0);
-      let s = 0, w = 0;
-      for (const r of rest) { const v = M.get(r); if (v != null && Number.isFinite(v)) { s += v * r.turnover; w += r.turnover; } }
-      items.push({ value: rv, other: rest.length, v: w ? s / w : null });
-    }
-    return { value, name, items, avg: wavg(M.get) };
-  });
-  const gap = 2, head = 15;
-  const html = [];
-  for (const sct of squarify(secs, 0, 0, W, H)) {
-    const showHead = sct.w > 56 && sct.h > 40;
-    const top = showHead ? head : 0;
-    html.push(`<div class="hm-sec" style="left:${sct.x}px;top:${sct.y}px;width:${sct.w}px;height:${sct.h}px">${showHead
-      ? `<div class="hm-head"><span>${esc(sct.name)}</span><b class="mono">${sct.avg != null ? signedPct(sct.avg) : ''}</b></div>` : ''}</div>`);
-    for (const t of squarify(sct.items, sct.x + gap / 2, sct.y + top + gap / 2, sct.w - gap, sct.h - top - gap)) {
-      const v = t.r ? M.get(t.r) : t.v;
+  const sectors = [...bySec].map(([name, rs]) => {
+    const raw = rs.reduce((t, r) => t + r.turnover, 0);
+    return { name, rs: rs.sort((a, b) => b.turnover - a.turnover), raw, value: size(raw) };
+  })
+    .sort((a, b) => b.value - a.value);
+  const drill = state.hmDrill && (state.hmDrill.type === 'sector' ? bySec.has(state.hmDrill.name) : true) ? state.hmDrill : null;
+  const gap = 2, html = [];
+  let crumb = '';
+
+  if (drill?.type === 'sector') {
+    // 1つの業種の中の銘柄
+    const s = sectors.find((x) => x.name === drill.name);
+    crumb = `<button class="hm-back" data-hm-back>← 全業種</button><b>${esc(s.name)}</b><span class="mono ${sign(wavgOf(s.rs, M.get))}">${fmtV(wavgOf(s.rs, M.get))}</span><small class="muted">${s.rs.length}銘柄</small>`;
+    const { shown, rest } = fitItems(s.rs.map((r) => ({ value: size(r.turnover), r })), W * H, minA, 30);
+    const items = [...shown];
+    // 「他」は小さすぎると押せないので、最低でも全体の約8%の大きさに
+    if (rest.length) items.push({ value: Math.max(size(rest.reduce((t, x) => t + x.r.turnover, 0)), shown.reduce((t, x) => t + x.value, 0) * 0.09), rest: rest.map((x) => x.r) });
+    for (const t of squarify(items, 0, 0, W, H)) {
       const w = t.w - gap, h = t.h - gap;
       if (w <= 0 || h <= 0) continue;
-      const name = t.r ? t.r.name : `他${t.other}銘柄`;
-      const label = w > 46 && h > 30 ? `<span class="hm-n">${esc(name)}</span><span class="hm-v mono">${v != null ? signedPct(v) : '—'}</span>`
-        : w > 30 && h > 16 ? `<span class="hm-v mono">${v != null ? (Math.abs(v) < 0.5 ? '0%' : signedPct(v, 0)) : ''}</span>` : '';
-      const big = w > 110 && h > 60 ? ' big' : '';
-      html.push(`<${t.r ? `button data-scr="${esc(t.r.sym)}"` : 'div'} class="hm-t${big}" style="left:${t.x + gap / 2}px;top:${t.y + gap / 2}px;width:${w}px;height:${h}px;background:${hmColor(v, M.scale)}"
-        title="${esc(`${name}${t.r ? `（${t.r.sym}）` : ''}  ${M.label} ${v != null ? signedPct(v, 2) : '—'}`)}">${label}</${t.r ? 'button' : 'div'}>`);
+      if (t.r) {
+        const v = M.get(t.r);
+        html.push(tileHtml({ x: t.x + gap / 2, y: t.y + gap / 2, w, h, bg: hmColor(v, M.scale), name: shortName(t.r.name), value: fmtV(v),
+          attrs: `data-scr="${esc(t.r.sym)}"`, tip: `${t.r.name}（${t.r.sym}） ${M.label} ${fmtV(v)}` }));
+      } else {
+        const v = wavgOf(t.rest, M.get);
+        html.push(tileHtml({ x: t.x + gap / 2, y: t.y + gap / 2, w, h, bg: hmColor(v, M.scale), name: `他${t.rest.length}銘柄`, value: fmtV(v),
+          sub: t.rest.slice(0, 4).map((r) => esc(shortName(r.name))).join('・'), tip: `その他 ${t.rest.length}銘柄（売買代金で重みをつけた平均）` }));
+      }
+    }
+  } else {
+    // 業種ごと（小さい業種は「他の業種」にまとめ、押すと広げる）
+    const list = drill?.type === 'sectors' ? sectors.filter((x) => drill.names.includes(x.name)) : sectors;
+    if (drill) crumb = `<button class="hm-back" data-hm-back>← 全業種</button><b>小さい業種</b><small class="muted">${list.length}業種</small>`;
+    else crumb = '<small class="muted">業種を押すと、その業種の銘柄を表示</small>';
+    const { shown, rest } = fitItems(list, W * H, minA * 1.6);
+    const items = [...shown];
+    if (rest.length) items.push({ value: Math.max(size(rest.reduce((t, x) => t + x.raw, 0)), shown.reduce((t, x) => t + x.value, 0) * 0.09), group: rest });
+    for (const t of squarify(items, 0, 0, W, H)) {
+      const w = t.w - gap, h = t.h - gap;
+      if (w <= 0 || h <= 0) continue;
+      if (t.group) {
+        const all = t.group.flatMap((x) => x.rs), v = wavgOf(all, M.get);
+        html.push(tileHtml({ x: t.x + gap / 2, y: t.y + gap / 2, w, h, bg: hmColor(v, M.scale), name: `他${t.group.length}業種`, value: fmtV(v),
+          attrs: `data-hm-group="${esc(t.group.map((x) => x.name).join('|'))}"`, sub: t.group.slice(0, 4).map((x) => esc(shortSector(x.name))).join('・'),
+          tip: t.group.map((x) => x.name).join('、') }));
+        continue;
+      }
+      const v = wavgOf(t.rs, M.get);
+      const top = t.rs.slice(0, 3).map((r) => `<i>${esc(shortName(r.name))} <b class="mono">${fmtV(M.get(r))}</b></i>`).join('');
+      html.push(tileHtml({ x: t.x + gap / 2, y: t.y + gap / 2, w, h, bg: hmColor(v, M.scale), name: shortSector(t.name), value: fmtV(v),
+        attrs: `data-hm-sector="${esc(t.name)}"`, sub: top, tip: `${t.name}（${t.rs.length}銘柄） ${M.label} ${fmtV(v)}` }));
     }
   }
   box.innerHTML = html.join('');
-  $('#hm-note').textContent = mode === 'chg' ? '大きさ＝売買代金・色＝今日の値動き' : `大きさ＝売買代金・色＝AI予測（市場平均との差）`;
+  $('#hm-crumb').innerHTML = crumb;
+  $('#hm-note').textContent = mode === 'chg' ? '大きさ＝売買代金・色＝今日の値動き' : '大きさ＝売買代金・色＝AI予測（市場平均との差）';
   const steps = [-1, -0.66, -0.33, 0, 0.33, 0.66, 1];
   $('#hm-legend').innerHTML = steps.map((k) => `<span style="background:${hmColor(k * M.scale, M.scale)}">${k === 0 ? '0' : `${k > 0 ? '+' : '−'}${+(Math.abs(k) * M.scale).toFixed(1)}`}</span>`).join('')
-    + `<small class="muted">${M.unit}（±${M.scale}%で最も濃い色）</small>`;
+    + `<small class="muted">%（±${M.scale}%で最も濃い色）</small>`;
 }
 document.addEventListener('click', (e) => {
-  const b = e.target.closest('[data-hm]');
+  const b = e.target.closest('[data-hm], [data-hm-sector], [data-hm-group], [data-hm-back]');
   if (!b) return;
-  state.settings.hmMode = b.dataset.hm;
-  save();
+  if (b.dataset.hm) { state.settings.hmMode = b.dataset.hm; save(); }
+  else if (b.dataset.hmSector) state.hmDrill = { type: 'sector', name: b.dataset.hmSector };
+  else if (b.dataset.hmGroup) state.hmDrill = { type: 'sectors', names: b.dataset.hmGroup.split('|') };
+  else state.hmDrill = null;
   renderHeatmap();
 });
+
 let hmResize;
 window.addEventListener('resize', () => { clearTimeout(hmResize); hmResize = setTimeout(() => { if (state.settings.tab === 'watch') renderHeatmap(); }, 200); });
 
