@@ -60,4 +60,9 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        main()
+    except Exception as e:  # noqa: BLE001
+        import traceback
+        print("PROBE ERROR " + traceback.format_exc().replace("\n", " / "))
+    open("result.json", "w").write("{}")
