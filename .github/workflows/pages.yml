@@ -101,11 +101,14 @@ jobs:
         continue-on-error: true
         env:
           MODEL_VARIANT: ${{ vars.MODEL_VARIANT || 'B_no_market' }}
+          EXP_SET: ${{ inputs.exp_set || 'base' }}
         run: |
           set -o pipefail
           read MODE TIER <<< "$(python -c "import json;m=json.load(open('raw/fetch_meta.json'))['history'];print(m['mode'],m['tier'])")"
           if [ "$MODE" = "full" ]; then ARGS=--train; elif [ "$TIER" = "active" ]; then echo "今回は省略"; exit 0; else ARGS=; fi
-          python scripts/model.py --history raw/history.json --universe raw/universe.json --market raw/market.json --cache cache --out raw --horizon 20 --tag 20 $ARGS 2>&1 | tee model20.log
+          EXP=${{ inputs.experiment && '--experiment' || '' }}
+          python scripts/model.py --history raw/history.json --universe raw/universe.json --market raw/market.json --cache cache --out raw --horizon 20 --tag 20 $ARGS $EXP 2>&1 | tee model20.log
+          (grep "^EXP " model20.log || true) | while read -r line; do echo "::notice title=設計の比較（1か月）::$line"; done
           echo "::notice title=1か月予測::$(tail -n 1 model20.log)"
 
       - name: AI予測のエラーを表示
