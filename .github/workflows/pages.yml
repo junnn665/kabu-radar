@@ -15,7 +15,7 @@ on:
         type: boolean
         default: false
       exp_set:
-        description: '比較する設計の組（base＝従来の4種 / us＝前の晩の米国市場）'
+        description: '比較する設計の組（base＝従来の4種 / us＝前の晩の米国市場 / sector＝業種の偏り）'
         default: 'base'
   schedule:
     - cron: '17,47 0-6 * * 1-5'       # 予備（ふだんは live.yml が取引中10分ごとに起動する）
@@ -64,6 +64,7 @@ jobs:
           cache-dependency-path: requirements.txt
 
       - name: 株価・決算予定日・財務・ニュースを取得
+        timeout-minutes: 30  # 止まったまま次の回を待たせないように
         id: fetch
         continue-on-error: true
         run: |
@@ -78,6 +79,7 @@ jobs:
         run: echo "::error title=取得エラー::$(tail -c 1500 fetch.log 2>/dev/null | tr '\n' '|')"
 
       - name: AI予測（朝は学習と検証も）
+        timeout-minutes: 40  # 止まったまま次の回を待たせないように
         id: model
         if: steps.fetch.outcome == 'success'
         continue-on-error: true
@@ -93,6 +95,7 @@ jobs:
           echo "::notice title=AI予測::$(tail -n 1 model.log)"
 
       - name: 1か月先のAI予測（朝は学習と検証、日中は全銘柄を取り直した回だけ予測）
+        timeout-minutes: 40  # 止まったまま次の回を待たせないように
         id: model20
         if: steps.fetch.outcome == 'success'
         continue-on-error: true
@@ -122,6 +125,7 @@ jobs:
           key: hist-${{ github.run_id }}
 
       - name: 判定・バックテスト・ペーパートレード・解説を生成
+        timeout-minutes: 15  # 止まったまま次の回を待たせないように
         if: steps.fetch.outcome == 'success'
         env:
           GITHUB_TOKEN: ${{ github.token }}

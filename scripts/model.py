@@ -232,7 +232,8 @@ VARIANTS = {
     "B_open_us": {"target": "market", "entry": "open", "drop": list(MARKET_COLS), "drop_prefix": ()},
 }
 EXP_SETS = {"base": ["A_all", "B_no_market", "C_no_market_sector", "D_sector_neutral"],
-            "us": ["B_no_market", "B_us_prev", "B_open", "B_open_us"]}
+            "us": ["B_no_market", "B_us_prev", "B_open", "B_open_us"],
+            "sector": ["B_no_market", "C_no_market_sector", "D_sector_neutral"]}
 DEFAULT_VARIANT = os.environ.get("MODEL_VARIANT") or "B_no_market"  # 2026-10 の比較で最も安定（IC 0.077・上位2% +0.68%・月勝率86%）
 
 
@@ -313,6 +314,12 @@ def evaluate(df, cols, label="ex", quiet=False, ev=("ex", "fwd")):
 
     top2 = p[p["rank"] >= 0.98]
     monthly = top2.assign(m=lambda x: x["date"].str[:7]).groupby("m")["ex"].mean()
+    # 業種の当たり外れを除いた順位（同じ日・同じ業種の平均予測を引く）でも上位2%を見る
+    p["pred_sn"] = p["pred"] - p.groupby(["date", "sector"])["pred"].transform("mean")
+    p["rank_sn"] = p.groupby("date")["pred_sn"].rank(pct=True)
+    top2sn = p[p["rank_sn"] >= 0.98]
+    daily = top2.groupby("date")["ex"].mean()
+    daily_sn = top2sn.groupby("date")["ex"].mean()
     # 偏り：上位2%のうち最も多い業種が占める割合（日ごとの平均）
     conc = top2.groupby("date")["sector"].agg(lambda x: x.value_counts(normalize=True).iloc[0]).mean()
     return {
@@ -323,6 +330,10 @@ def evaluate(df, cols, label="ex", quiet=False, ev=("ex", "fwd")):
         "top": [top(10), top(20), top(50)],
         "top2pct": {"excess": float(p.loc[p["rank"] >= 0.98, "ex"].mean()), "win": float((p.loc[p["rank"] >= 0.98, "fwd"] > 0).mean()), "n": int((p["rank"] >= 0.98).sum())},
         "bottom2pct": {"excess": float(p.loc[p["rank"] <= 0.02, "ex"].mean()), "n": int((p["rank"] <= 0.02).sum())},
+        "top2pctSectorNeutral": {"excess": float(top2sn["ex"].mean()), "win": float((top2sn["fwd"] > 0).mean()), "n": int(len(top2sn)),
+                                 "worstDay5pct": float(daily_sn.quantile(0.05)), "negDays": float((daily_sn < 0).mean()),
+                                 "sectorConcentration": float(top2sn.groupby("date")["sector"].agg(lambda x: x.value_counts(normalize=True).iloc[0]).mean())},
+        "top2Risk": {"worstDay5pct": float(daily.quantile(0.05)), "negDays": float((daily < 0).mean())},
         "monthlyTop2pct": {k: float(v) for k, v in monthly.items()},
     }
 
@@ -367,9 +378,11 @@ def main():
             v = VARIANTS[name]
             t1 = time.time()
             r = evaluate(df, feature_cols(df, v), label_col(v), quiet=True, ev=eval_cols(v))
-            res[name] = {k: r[k] for k in ("ic", "icPositiveDays", "top2pct", "bottom2pct", "sectorConcentration", "positiveMonths")} | {"top20": r["top"][1]}
+            res[name] = {k: r[k] for k in ("ic", "icPositiveDays", "top2pct", "bottom2pct", "sectorConcentration", "positiveMonths", "top2pctSectorNeutral", "top2Risk")} | {"top20": r["top"][1]}
+            sn, rk = r["top2pctSectorNeutral"], r["top2Risk"]
             print(f"EXP {name}: IC {r['ic']:.3f} top2% {r['top2pct']['excess'] * 100:+.2f}% win {r['top2pct']['win'] * 100:.0f}% "
-                  f"top20 {r['top'][1]['excess'] * 100:+.2f}% 偏り {r['sectorConcentration'] * 100:.0f}% 月勝率 {r['positiveMonths'] * 100:.0f}% ({time.time() - t1:.0f}s)", flush=True)
+                  f"偏り {r['sectorConcentration'] * 100:.0f}% 月勝率 {r['positiveMonths'] * 100:.0f}% 悪い日(5%) {rk['worstDay5pct'] * 100:+.2f}% 負け日 {rk['negDays'] * 100:.0f}% "
+                  f"｜業種内順位 top2% {sn['excess'] * 100:+.2f}% win {sn['win'] * 100:.0f}% 偏り {sn['sectorConcentration'] * 100:.0f}% 悪い日(5%) {sn['worstDay5pct'] * 100:+.2f}% 負け日 {sn['negDays'] * 100:.0f}% ({time.time() - t1:.0f}s)", flush=True)
         dump(res, os.path.join(args.out, f"experiments{suf}.json"))
     variant = VARIANTS[DEFAULT_VARIANT]
     label = label_col(variant)
