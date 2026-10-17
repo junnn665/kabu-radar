@@ -492,3 +492,8 @@ div.hm-t:hover { outline: none; }
 .hm-crumb { display: flex; align-items: center; gap: 8px; min-height: 28px; margin-bottom: 6px; font-size: 13px; }
 .hm-crumb .mono { font-size: 13px; }
 .hm-back { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 99px; padding: 3px 10px; font-size: 12px; }
+.track { display: grid; gap: 2px; padding: 8px 12px; margin: 0 0 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--text); text-decoration: none; font-size: 12px; }
+.track b { font-size: 12px; }
+.track small { color: var(--muted); font-size: 11px; }
+.track.bad { border-color: #fb923c66; background: #fb923c12; }
+.track.bad > b { color: #fdba74; }

@@ -633,6 +633,23 @@ function aiPicks(n = 5) {
   return out;
 }
 
+// AIピックの「本番での答え合わせ」：実際に公開した予測の上位銘柄が、その後どうなったか（検証の数字だけでなく、本番の成績も必ず見せる）
+function renderPickTrack() {
+  const tr = state.server.ai_track;
+  const box = $('#picks-track');
+  const days = (tr?.days || []).filter((d) => d.top && d.elapsed >= 1);
+  if (!days.length) { box.innerHTML = ''; return; }
+  const t = tr.total;
+  const avg = days.reduce((a, d) => a + d.top.excess, 0) / days.length;
+  const bad = avg < 0;
+  const md = (d) => `${+d.slice(5, 7)}/${+d.slice(8, 10)}`;
+  box.innerHTML = `<a href="#" data-goto="perf" class="track ${bad ? 'bad' : 'good'}">
+    <b>本番の答え合わせ</b>
+    <span>${t?.days ? `5日後まで確定した${t.days}日分：上位銘柄は市場平均より <b class="mono">${pctf(t.topExcess, 1)}</b>` : `途中経過（${md(days.at(-1).date)}〜${md(days[0].date)}の予測）：上位銘柄は市場平均より <b class="mono">${pctf(avg, 1)}</b>`}</span>
+    ${bad ? '<small>いまは予測が外れている時期です。上位は特定の業種に偏りやすく、その業種が逆に動くとまとめて外れます。参考程度に見てください。</small>' : '<small>過去の検証どおりに当たっているか、毎日確認しています。</small>'}
+  </a>`;
+}
+
 function renderPicks() {
   const picks = useAI() ? aiPicks(5) : [];
   const hz = $('#hz');
@@ -641,6 +658,7 @@ function renderPicks() {
   if (picks.length) {
     $('#picks-title').textContent = '今日のAIピック';
     $('#picks-sub').textContent = H20() ? '1か月後（20営業日）に市場平均を上回る予測・高い順' : '1週間後（5営業日）に市場平均を上回る予測・高い順';
+    renderPickTrack();
     const [top, ...rest] = picks;
     $('#picks').innerHTML = `
       <button class="hero" data-scr="${esc(top.sym)}">
