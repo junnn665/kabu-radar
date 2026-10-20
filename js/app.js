@@ -105,7 +105,12 @@ function aiIsBetter() {
   if (ai?.excess == null) return false;
   return pts?.excess == null || ai.excess > pts.excess;
 }
-const useAI = () => !!state.server.model?.report && (state.settings.method === 'ai' || (state.settings.method !== 'points' && aiIsBetter()));
+// 本番の答え合わせ（5営業日後まで確定した分）で、上位銘柄が2日以上続けて市場平均に負けているなら「自動」ではAIを使わない
+function aiLiveFailing() {
+  const t = state.server.ai_track?.total;
+  return !!t && t.days >= 2 && t.topExcess != null && t.topExcess < 0;
+}
+const useAI = () => !!state.server.model?.report && (state.settings.method === 'ai' || (state.settings.method !== 'points' && aiIsBetter() && !aiLiveFailing()));
 // 予測期間：5営業日（1週間）か20営業日（1か月）。ホームの切り替えで全体の並び順が変わる
 const H20 = () => state.settings.horizon === 20 && !!state.server.model20?.report;
 const predOf = (r) => (H20() ? r?.pred20 : r?.pred) ?? null;
@@ -678,6 +683,12 @@ function renderPicks() {
       </button>`).join('')}`;
     return;
   }
+  const t = state.server.ai_track?.total;
+  $('#picks-track').innerHTML = state.server.model?.report && state.settings.method === 'auto' && aiLiveFailing()
+    ? `<a href="#" data-goto="perf" class="track bad"><b>AIピックを一時停止中</b>
+        <span>本番の答え合わせで、AIの上位銘柄が市場平均より <b class="mono">${pctf(t.topExcess, 1)}</b>（${t.days}日分・勝ち ${Math.round((t.topWin || 0) * 100)}%）と外れ続けています。</span>
+        <small>成績が戻るまで、ここはシグナル点数で表示します。AIの予測は銘柄の詳細には引き続き表示します（設定の判定方式で「AI予測」を選ぶと、ここにも出ます）。</small></a>`
+    : '';
   // AI予測が無いとき（デモなど）は、ウォッチリストのシグナル点数で
   $('#picks-title').textContent = '今日の狙い目';
   $('#picks-sub').textContent = 'ウォッチリストから点数20以上';

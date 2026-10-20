@@ -424,6 +424,11 @@ def main():
     last = df.sort_values("date").groupby("sym", observed=True).tail(1)
     last = last[last["date"] >= sorted(df["date"].unique())[-3]]  # 取引停止などで古い銘柄は除く
     pred = model.predict(last[cols])
+    # 中央寄せ：学習は外れ値に強い方法（huber）なので、予測は「平均」でなく「中央値」寄りになり、株価の上がり方の偏りのぶん
+    # ほとんどの銘柄がマイナスに出てしまう。売買代金のある銘柄の平均を 0 にそろえて「平均的な銘柄と比べて上か下か」にする（順位は変わらない）
+    liq_mask = last["liquid"].to_numpy()
+    center = float(np.mean(pred[liq_mask])) if liq_mask.any() else 0.0
+    pred = pred - center
     last = last.assign(pred=pred)
     liq = last[last["liquid"]]
     ranks = liq["pred"].rank(pct=True)
@@ -446,7 +451,7 @@ def main():
         meta_reason = {}
     dump({"date": str(df["date"].max()), "reasons": reasons, **meta_reason}, os.path.join(args.out, f"ai_reasons{suf}.json"))
     meta = load(meta_path, {})
-    dump({"date": str(df["date"].max()), "horizon": H, "model": meta, "report": report, "preds": out}, os.path.join(args.out, f"predictions{suf}.json"))
+    dump({"date": str(df["date"].max()), "horizon": H, "model": meta, "report": report, "center": round(center * 100, 3), "preds": out}, os.path.join(args.out, f"predictions{suf}.json"))
     print(f"予測 {len(out):,}銘柄（{time.time() - t0:.0f}s）", json.dumps({k: report[k] for k in ("ic", "top2pct")} if report else {}, ensure_ascii=False))
 
 
