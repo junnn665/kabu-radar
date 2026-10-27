@@ -1,0 +1,30 @@
+name: 売り方の比較（調査用）
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/cache/restore@v5
+        with:
+          path: cache
+          key: hist-none
+          restore-keys: hist-
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: 比較
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: |
+          set -o pipefail
+          python3 -c "import gzip,json;d=json.load(gzip.open('cache/history.json.gz','rt'));json.dump(d['bars'],open('history.json','w'))"
+          node scripts/research/rules.mjs history.json 2>&1 | tee rules.log
+          (grep "^RULES " rules.log || true) | while read -r line; do echo "::notice title=売り方::$line"; done
