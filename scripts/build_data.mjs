@@ -7,7 +7,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { analyze, scoreOf, verdictOf, SIGNAL_MAP, BASE_WEIGHTS, STRONG, WATCH } from '../js/signals.js';
-import { buildPanel, panelStats, walkForward, simulate, tradeSummary, DEFAULT_RULES } from '../js/backtest.js';
+import { buildPanel, panelStats, walkForward, simulate, tradeSummary, DEFAULT_RULES, RULE_SETS } from '../js/backtest.js';
 import { makeRegime } from '../js/market.js';
 import { computeReview } from '../js/review.js';
 import { levels } from '../js/levels.js';
@@ -142,10 +142,20 @@ async function main() {
     strategy[mode] = tradeSummary(all, NOTIONAL);
   }
   recentTrades.sort((a, b) => (b.entryDate > a.entryDate ? 1 : -1));
+  // 売り方のルールの比較（買いは同じ「点数30以上」）。全体と直近60営業日
+  const cut = panel.dates[Math.max(0, panel.dates.length - 60)];
+  const ruleCompare = {};
+  for (const [k, { label, rules }] of Object.entries(RULE_SETS)) {
+    const all = [];
+    for (const s of syms) all.push(...simulate(history[s], BASE_WEIGHTS, rules));
+    ruleCompare[k] = { label, all: tradeSummary(all, NOTIONAL), recent: tradeSummary(all.filter((t) => t.entryDate >= cut), NOTIONAL) };
+  }
+  console.log('RULES ' + Object.entries(ruleCompare).map(([k, v]) => `${k}: 平均${(v.all.avg * 100).toFixed(2)}% 勝率${Math.round(v.all.win * 100)}% ${v.all.n}回 保有${(v.all.avgHeld || 0).toFixed(1)}日 ｜直近60日 平均${((v.recent.avg || 0) * 100).toFixed(2)}% 勝率${Math.round((v.recent.win || 0) * 100)}% ${v.recent.n}回`).join(' / '));
+  recentTrades.sort((a, b) => (b.entryDate > a.entryDate ? 1 : -1));
   writeJson(path.join(OUT, 'backtest.json'), {
     updatedAt: now.toISOString(), symbols: panel.syms.length, days: panel.dates.length, from: panel.dates[0], to: panel.dates.at(-1),
     ...bt, tuned, walkForward: { ...wf, weightsNow: undefined },
-    rules: DEFAULT_RULES, notional: NOTIONAL, strategy, trades: recentTrades.slice(0, 120),
+    rules: DEFAULT_RULES, notional: NOTIONAL, strategy, ruleCompare, trades: recentTrades.slice(0, 120),
   });
   }
   // AI予測モデルの検証結果（学習は朝だけ。日中は同じモデルで予測し直す）

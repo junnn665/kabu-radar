@@ -1,0 +1,50 @@
+name: AI experiment（比較・本番に影響なし）
+
+# AI予測モデルの設計を比べるだけ。サイトの更新（pages.yml）とは別に動き、本番のモデルやデータは変えない
+on:
+  workflow_dispatch:
+    inputs:
+      exp_set:
+        description: '比較する設計の組（base / us / sector / adapt）'
+        default: 'adapt'
+      horizon:
+        description: '何営業日後（5 or 20）'
+        default: '5'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kabu-radar-experiment
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - name: 日足キャッシュを読む（書き戻さない）
+        uses: actions/cache/restore@v5
+        with:
+          path: cache
+          key: hist-none
+          restore-keys: hist-
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: 比較
+        env:
+          EXP_SET: ${{ inputs.exp_set }}
+        run: |
+          set -o pipefail
+          pip install --quiet -r requirements.txt 2>&1 | tail -3
+          mkdir -p exp/raw exp/cache
+          git fetch -q --depth 1 origin data && git show origin/data:universe.json > exp/raw/universe.json
+          python -c "import gzip,json;d=json.load(gzip.open('cache/history.json.gz','rt'));json.dump(d['bars'],open('exp/raw/history.json','w'));print(len(d['bars']),'銘柄')"
+          echo '{}' > exp/raw/market.json
+          python -W ignore scripts/model.py --history exp/raw/history.json --universe exp/raw/universe.json --market exp/raw/market.json \
+            --cache exp/cache --out exp/raw --train --no-eval --experiment --horizon ${{ inputs.horizon }} 2>&1 | tee exp.log
+          (grep "^EXP " exp.log || true) | while read -r line; do echo "::notice title=比較（${{ inputs.horizon }}日）::$line"; done

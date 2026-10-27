@@ -3,6 +3,7 @@
 //
 // 成績は「市場平均との差（超過リターン）」でも測る。相場全体が上がった日は何を買っても勝つため、
 // 銘柄選びの腕前は市場平均を引いた値で見ないと分からない。
+import { atr } from './indicators.js';
 import { SIGNALS, BASE_WEIGHTS, SIGNAL_BIT, computeIndicators, signalsAt, scoreOf, isLiquid, MIN_TURNOVER, idsToMask, STRONG, WATCH } from './signals.js';
 
 export const WARMUP = 75; // 75日線が揃うまでは評価しない
@@ -172,6 +173,7 @@ export function simulate(candles, weights = BASE_WEIGHTS, rules = DEFAULT_RULES,
   const trades = [];
   if (!candles || candles.length < WARMUP + 2) return trades;
   const ind = computeIndicators(candles);
+  const atrs = rules.atrStop ? atr(candles, 14) : null;
   let pos = null;
   for (let i = WARMUP; i < candles.length; i++) {
     const ids = signalsAt(ind, i).map((f) => f.id);
@@ -181,16 +183,18 @@ export function simulate(candles, weights = BASE_WEIGHTS, rules = DEFAULT_RULES,
       const ret = px / pos.entryPrice - 1;
       const held = i - pos.idx;
       let reason = null;
-      if (ret >= rules.takeProfit) reason = '利確';
-      else if (ret <= rules.stopLoss) reason = '損切り';
-      else if (sc <= rules.exitScore) reason = 'スコア悪化';
+      if (pos.target != null ? px >= pos.target : rules.takeProfit != null && ret >= rules.takeProfit) reason = '利確';
+      else if (pos.stop != null ? px <= pos.stop : rules.stopLoss != null && ret <= rules.stopLoss) reason = '損切り';
+      else if (rules.exitScore != null && sc <= rules.exitScore) reason = 'スコア悪化';
       else if (held >= rules.hold) reason = '保有期限';
       if (reason) {
-        trades.push({ entryDate: pos.date, entryPrice: pos.entryPrice, exitDate: candles[i].date, exitPrice: px, ret, reason, signals: pos.signals });
+        trades.push({ entryDate: pos.date, entryPrice: pos.entryPrice, exitDate: candles[i].date, exitPrice: px, ret, reason, signals: pos.signals, held });
         pos = null;
       }
     } else if (sc >= rules.entry && isLiquid(ind, i, minTurnover)) {
       pos = { idx: i, date: candles[i].date, entryPrice: px, signals: ids };
+      // ATR（ふだんの値幅）を基準にした損切り・利確（サイトに表示している目安と同じ考え方）
+      if (atrs?.[i]) { pos.stop = px - rules.atrStop * atrs[i]; pos.target = rules.atrTarget ? px + rules.atrTarget * atrs[i] : null; }
     }
   }
   if (pos) {
@@ -203,7 +207,20 @@ export function simulate(candles, weights = BASE_WEIGHTS, rules = DEFAULT_RULES,
 export function tradeSummary(trades, notional = 100000) {
   const closed = trades.filter((t) => t.exitDate);
   const s = summarize(closed.map((t) => t.ret));
-  return { ...s, trades: trades.length, pnl: Math.round(trades.reduce((a, t) => a + t.ret * notional, 0)) };
+  const held = closed.filter((t) => t.held != null);
+  const reasons = {};
+  for (const t of closed) reasons[t.reason] = (reasons[t.reason] || 0) + 1;
+  return { ...s, trades: trades.length, pnl: Math.round(trades.reduce((a, t) => a + t.ret * notional, 0)),
+    avgHeld: held.length ? held.reduce((a, t) => a + t.held, 0) / held.length : null, reasons };
 }
+
+// 損切り・利確のルールの比較（同じ買いシグナルで、売り方だけ変える）
+export const RULE_SETS = {
+  fixed: { label: '−5%損切り・+10%利確（従来）', rules: { entry: STRONG, hold: 10, takeProfit: 0.1, stopLoss: -0.05, exitScore: -20 } },
+  atr: { label: 'ATR×2損切り・ATR×3利確（サイトの目安）', rules: { entry: STRONG, hold: 10, atrStop: 2, atrTarget: 3, exitScore: -20 } },
+  wide: { label: '−10%損切り・+15%利確', rules: { entry: STRONG, hold: 10, takeProfit: 0.15, stopLoss: -0.1, exitScore: -20 } },
+  hold10: { label: '損切りなし・10日保有', rules: { entry: STRONG, hold: 10, takeProfit: null, stopLoss: null, exitScore: null } },
+  hold5: { label: '損切りなし・5日保有', rules: { entry: STRONG, hold: 5, takeProfit: null, stopLoss: null, exitScore: null } },
+};
 
 export { SIGNAL_BIT };

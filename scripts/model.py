@@ -230,10 +230,20 @@ VARIANTS = {
     "B_us_prev": {"target": "market", "drop": list(MARKET_COLS), "drop_prefix": US_NIGHT},
     "B_open": {"target": "market", "entry": "open", "drop": list(MARKET_COLS), "drop_prefix": NO_US},
     "B_open_us": {"target": "market", "entry": "open", "drop": list(MARKET_COLS), "drop_prefix": ()},
+    # 2026-10 追加の比較：相場の流れの変化への強さ（学習期間・学び直す間隔・新しい日を重く・順位で学ぶ）
+    "B_w250": {"target": "market", "drop": list(MARKET_COLS), "opts": {"window": 250}},
+    "B_w120": {"target": "market", "drop": list(MARKET_COLS), "opts": {"window": 120}},
+    "B_weekly": {"target": "market", "drop": list(MARKET_COLS), "opts": {"block": 5}},
+    "B_decay60": {"target": "market", "drop": list(MARKET_COLS), "opts": {"half_life": 60}},
+    "B_rank": {"target": "market", "drop": list(MARKET_COLS), "opts": {"rank_label": True}},
+    "C_rank": {"target": "market", "drop": list(MARKET_COLS) + ["sector"], "opts": {"rank_label": True}},
+    "R_reversal5": {"target": "market", "drop": [], "opts": {"rule": ("ret5", -1)}},
+    "R_momentum60": {"target": "market", "drop": [], "opts": {"rule": ("ret60", 1)}},
 }
 EXP_SETS = {"base": ["A_all", "B_no_market", "C_no_market_sector", "D_sector_neutral"],
             "us": ["B_no_market", "B_us_prev", "B_open", "B_open_us"],
-            "sector": ["B_no_market", "C_no_market_sector", "D_sector_neutral"]}
+            "sector": ["B_no_market", "C_no_market_sector", "D_sector_neutral"],
+            "adapt": ["B_no_market", "B_w250", "B_w120", "B_weekly", "B_decay60", "B_rank", "C_rank", "R_reversal5", "R_momentum60"]}
 DEFAULT_VARIANT = os.environ.get("MODEL_VARIANT") or "B_no_market"  # 2026-10 の比較で最も安定（IC 0.077・上位2% +0.68%・月勝率86%）
 
 
@@ -268,15 +278,23 @@ def eval_cols(variant):
     return ("ex_o", "fwd_o") if variant.get("entry") == "open" else ("ex", "fwd")
 
 
-def train(df_train, cols, label="ex"):
+def train(df_train, cols, label="ex", half_life=None, rank_label=False):
     import lightgbm as lgb
     d = df_train[df_train[label].notna()]
     cats = [c for c in ("seg", "sector") if c in cols]
-    ds = lgb.Dataset(d[cols], label=d[label], categorical_feature=cats, free_raw_data=True)
+    y = d[label]
+    if rank_label:  # 外れ値に振り回されないよう、日ごとの順位（-0.5〜+0.5）を正解にする
+        y = d.groupby("date")[label].rank(pct=True) - 0.5
+    w = None
+    if half_life:  # 新しい日ほど重く（相場の流れの変化に早く合わせる）
+        days = pd.to_datetime(d["date"])
+        age = (days.max() - days).dt.days.to_numpy()
+        w = np.power(0.5, age / half_life)
+    ds = lgb.Dataset(d[cols], label=y, weight=w, categorical_feature=cats, free_raw_data=True)
     return lgb.train(PARAMS, ds, num_boost_round=ROUNDS)
 
 
-def evaluate(df, cols, label="ex", quiet=False, ev=("ex", "fwd")):
+def evaluate(df, cols, label="ex", quiet=False, ev=("ex", "fwd"), opts=None):
     """ウォークフォワード検証：学習に使っていない期間の成績（評価は常に「市場平均との差」）"""
     dates = np.array(sorted(df["date"].unique()))
     usable = df[df["liquid"] & df[ev[0]].notna()].rename(columns={ev[0]: "_ev", ev[1]: "_evf"})
@@ -286,16 +304,22 @@ def evaluate(df, cols, label="ex", quiet=False, ev=("ex", "fwd")):
     n_days = len(dates)
     test_start = max(MIN_TRAIN_DAYS + H + 1, n_days - H - TEST_DAYS)
     preds = []
-    for s in range(test_start, n_days - H, TEST_BLOCK):
-        test_dates = dates[s:min(s + TEST_BLOCK, n_days - H)]
+    o = opts or {}
+    block, window = o.get("block", TEST_BLOCK), o.get("window", TRAIN_WINDOW)
+    for s in range(test_start, n_days - H, block):
+        test_dates = dates[s:min(s + block, n_days - H)]
         train_end = dates[s - H - 1]  # 正解（H日後）が分かっている日まで
-        train_start = dates[max(0, s - H - 1 - TRAIN_WINDOW)]
+        train_start = dates[max(0, s - H - 1 - window)]
         tr = usable[(usable["date"] >= train_start) & (usable["date"] <= train_end)]
         te = usable[usable["date"].isin(test_dates)]
         if len(tr) < MIN_ROWS or not len(te):
             continue
-        model = train(tr, cols, label)
-        preds.append(pd.DataFrame({"date": te["date"].values, "sym": te["sym"].values, "pred": model.predict(te[cols]), "ex": te["ex"].values,
+        if o.get("rule"):  # 学習なしの単純なルール（比較用）
+            col, sgn = o["rule"]
+            pr = sgn * te[col].to_numpy()
+        else:
+            pr = train(tr, cols, label, o.get("half_life"), o.get("rank_label")).predict(te[cols])
+        preds.append(pd.DataFrame({"date": te["date"].values, "sym": te["sym"].values, "pred": pr, "ex": te["ex"].values,
                                    "fwd": te["fwd"].values, "sector": te["sector"].values}))
         if not quiet:
             print(f"  検証ブロック {test_dates[0]}〜{test_dates[-1]}: 学習 {len(tr):,}件 → 予測 {len(te):,}件", flush=True)
@@ -335,6 +359,12 @@ def evaluate(df, cols, label="ex", quiet=False, ev=("ex", "fwd")):
                                  "sectorConcentration": float(top2sn.groupby("date")["sector"].agg(lambda x: x.value_counts(normalize=True).iloc[0]).mean())},
         "top2Risk": {"worstDay5pct": float(daily.quantile(0.05)), "negDays": float((daily < 0).mean())},
         "monthlyTop2pct": {k: float(v) for k, v in monthly.items()},
+        "recent": {  # 直近の成績（相場の流れが変わったときに強いか）
+            "top2_3m": float(top2.loc[top2["date"] >= sorted(p["date"].unique())[-63], "ex"].mean()),
+            "top2_1m": float(top2.loc[top2["date"] >= sorted(p["date"].unique())[-21], "ex"].mean()),
+            "ic_3m": float(ic[ic.index >= sorted(p["date"].unique())[-63]].mean()),
+            "bottom2_3m": float(p.loc[(p["rank"] <= 0.02) & (p["date"] >= sorted(p["date"].unique())[-63]), "ex"].mean()),
+        },
     }
 
 
@@ -377,12 +407,12 @@ def main():
         for name in EXP_SETS.get(os.environ.get("EXP_SET", "base"), EXP_SETS["base"]):
             v = VARIANTS[name]
             t1 = time.time()
-            r = evaluate(df, feature_cols(df, v), label_col(v), quiet=True, ev=eval_cols(v))
-            res[name] = {k: r[k] for k in ("ic", "icPositiveDays", "top2pct", "bottom2pct", "sectorConcentration", "positiveMonths", "top2pctSectorNeutral", "top2Risk")} | {"top20": r["top"][1]}
+            r = evaluate(df, feature_cols(df, v), label_col(v), quiet=True, ev=eval_cols(v), opts=v.get("opts"))
+            res[name] = {k: r[k] for k in ("ic", "icPositiveDays", "top2pct", "bottom2pct", "sectorConcentration", "positiveMonths", "top2pctSectorNeutral", "top2Risk", "recent", "monthlyTop2pct")} | {"top20": r["top"][1]}
             sn, rk = r["top2pctSectorNeutral"], r["top2Risk"]
             print(f"EXP {name}: IC {r['ic']:.3f} top2% {r['top2pct']['excess'] * 100:+.2f}% win {r['top2pct']['win'] * 100:.0f}% "
                   f"偏り {r['sectorConcentration'] * 100:.0f}% 月勝率 {r['positiveMonths'] * 100:.0f}% 悪い日(5%) {rk['worstDay5pct'] * 100:+.2f}% 負け日 {rk['negDays'] * 100:.0f}% "
-                  f"｜業種内順位 top2% {sn['excess'] * 100:+.2f}% win {sn['win'] * 100:.0f}% 偏り {sn['sectorConcentration'] * 100:.0f}% 悪い日(5%) {sn['worstDay5pct'] * 100:+.2f}% 負け日 {sn['negDays'] * 100:.0f}% ({time.time() - t1:.0f}s)", flush=True)
+                  f"｜業種内順位 top2% {sn['excess'] * 100:+.2f}% ｜直近3か月 top2% {r['recent']['top2_3m'] * 100:+.2f}% IC {r['recent']['ic_3m']:.3f} bottom2% {r['recent']['bottom2_3m'] * 100:+.2f}% ｜直近1か月 top2% {r['recent']['top2_1m'] * 100:+.2f}% ({time.time() - t1:.0f}s)", flush=True)
         dump(res, os.path.join(args.out, f"experiments{suf}.json"))
     variant = VARIANTS[DEFAULT_VARIANT]
     label = label_col(variant)
