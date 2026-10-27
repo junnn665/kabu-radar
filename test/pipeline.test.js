@@ -72,5 +72,6 @@ test('build_data generates all files and keeps paper-trade state between runs', 
   assert.equal(read(path.join(out2, 'backtest.json')).updatedAt, bt.updatedAt);
   const p2 = read(path.join(out2, 'paper.json'));
   assert.equal(p2.startedAt, p1.startedAt);
+  assert.equal(p2.rulesVersion, 3);
   assert.equal(p2.open.length + p2.closed.length, p1.open.length + p1.closed.length);
 });

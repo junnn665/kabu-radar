@@ -33,7 +33,7 @@ jobs:
         id: gate
         run: |
           H=$(TZ=Asia/Tokyo date +%H%M); D=$(TZ=Asia/Tokyo date +%u)
-          if [ "${{ inputs.test }}" = "true" ] || { [ "$D" -le 5 ] && [ "$H" -ge 0830 ] && [ "$H" -lt 1530 ]; }; then echo "run=yes" >> "$GITHUB_OUTPUT"; else echo "取引時間外（$H）"; echo "run=no" >> "$GITHUB_OUTPUT"; fi
+          if [ "${{ inputs.test }}" = "true" ] || { [ "$D" -le 5 ] && [ "$H" -ge 0830 ] && [ "$H" -lt 1550 ]; }; then echo "run=yes" >> "$GITHUB_OUTPUT"; else echo "取引時間外（$H）"; echo "run=no" >> "$GITHUB_OUTPUT"; fi
 
       - uses: actions/checkout@v5
         if: steps.gate.outputs.run == 'yes'
@@ -61,7 +61,7 @@ jobs:
         if: steps.gate.outputs.run == 'yes' && inputs.test
         run: python scripts/live_quotes.py --universe universe.json --once --out live/live.json
 
-      - name: 1分ごとに更新（15:31まで）
+      - name: 1分ごとに更新（15:52まで）
         if: steps.gate.outputs.run == 'yes' && !inputs.test
         env:
           GH_TOKEN: ${{ github.token }}

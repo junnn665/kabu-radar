@@ -90,7 +90,7 @@ export const jstParts = (ms = Date.now()) => {
 };
 export const liveWindow = (ms = Date.now()) => {
   const { hm, wd } = jstParts(ms);
-  return wd >= 1 && wd <= 5 && hm >= 900 && hm <= 1540;
+  return wd >= 1 && wd <= 5 && hm >= 900 && hm < 1600;
 };
 
 export class LiveFeed {

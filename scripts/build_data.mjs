@@ -210,11 +210,22 @@ async function main() {
   const paper = readJson(path.join(PREV, 'paper.json'), null) || {
     startedAt: jstDate, notional: NOTIONAL, rules: DEFAULT_RULES, open: [], closed: [],
   };
-  paper.rules = { ...DEFAULT_RULES, ...(paper.rulesVersion === 2 ? paper.rules : {}) };
-  paper.rulesVersion = 2;
+  // 2026-10-28：仮想口座の売買を「毎朝、前日の終値で判断」に変更（日中の途中の値段で何度も売買していて、検証と大きくずれていたため）。
+  // それまでの記録は archive に要約だけ残してリセット
+  const resetPaper = (acc, rules) => {
+    if (acc.rulesVersion >= 3) return acc;
+    const c = acc.closed || [];
+    const sum = c.length ? { trades: c.length, avg: c.reduce((a, t) => a + t.ret, 0) / c.length, win: c.filter((t) => t.ret > 0).length / c.length } : null;
+    return { startedAt: jstDate, notional: NOTIONAL, rules, open: [], closed: [], rulesVersion: 3,
+      archive: [...(acc.archive || []), { from: acc.startedAt, to: jstDate, note: '日中の途中の値段で売買していたため、ルールを直してリセット', ...sum }] };
+  };
+  Object.assign(paper, resetPaper(paper, DEFAULT_RULES));
+  paper.rules = { ...DEFAULT_RULES, ...paper.rules };
   const R = paper.rules;
   const opened = [], closedNow = [];
   const rowBy = Object.fromEntries(rows.map((r) => [r.sym, r]));
+  // 売買するのは毎朝の全件更新（前日の確定した終値）のときだけ。日中は値洗い（含み損益の更新）だけ
+  const TRADE = MODE === 'daily';
   paper.open = paper.open.filter((p) => {
     const cs = history[p.sym], row = rowBy[p.sym];
     if (!cs || !row) return true;
@@ -223,6 +234,7 @@ async function main() {
     const px = cs.at(-1).close;
     const ret = px / p.entryPrice - 1;
     Object.assign(p, { lastPrice: px, ret, held });
+    if (!TRADE) return true;
     let reason = null;
     if (ret >= R.takeProfit) reason = '利確';
     else if (ret <= R.stopLoss) reason = '損切り';
@@ -234,7 +246,7 @@ async function main() {
     return false;
   });
   const openSyms = new Set(paper.open.map((p) => p.sym));
-  for (const r of rows) {
+  for (const r of TRADE ? rows : []) {
     if (opened.length >= MAX_NEW_PAPER || paper.open.length >= MAX_OPEN_PAPER) break;
     if (r.score < R.entry || !r.liquid || openSyms.has(r.sym)) continue;
     if (paper.closed.some((c) => c.sym === r.sym && c.exitDate === quotes[r.sym][3])) continue;
@@ -246,7 +258,7 @@ async function main() {
   writeJson(path.join(OUT, 'paper.json'), paper);
 
   // 6b) AI予測で売買する仮想口座（予測の上位1%を買い、最長5営業日）
-  const paperAI = readJson(path.join(PREV, 'paper_ai.json'), null) || { startedAt: jstDate, notional: NOTIONAL, rules: AI_RULES, open: [], closed: [] };
+  const paperAI = resetPaper(readJson(path.join(PREV, 'paper_ai.json'), null) || { startedAt: jstDate, notional: NOTIONAL, rules: AI_RULES, open: [], closed: [] }, AI_RULES);
   const openedAI = [];
   if (predDoc) {
     paperAI.open = paperAI.open.filter((p) => {
@@ -256,13 +268,14 @@ async function main() {
       const held = entryIdx < 0 ? 0 : cs.length - 1 - entryIdx;
       const px = cs.at(-1).close, ret = px / p.entryPrice - 1;
       Object.assign(p, { lastPrice: px, ret, held });
+      if (!TRADE) return true;
       const reason = ret >= AI_RULES.takeProfit ? '利確' : ret <= AI_RULES.stopLoss ? '損切り' : held >= AI_RULES.hold ? '保有期限' : null;
       if (!reason) return true;
       paperAI.closed.unshift({ ...p, exitDate: cs.at(-1).date, exitPrice: px, ret, reason, pnl: Math.round(ret * paperAI.notional) });
       return false;
     });
     const held = new Set(paperAI.open.map((p) => p.sym));
-    const cands = rows.filter((r) => r.liquid && r.aiRank >= AI_RULES.entryRank && r.pred > 0 && !held.has(r.sym)
+    const cands = (TRADE ? rows : []).filter((r) => r.liquid && r.aiRank >= AI_RULES.entryRank && r.pred > 0 && !held.has(r.sym)
       && !paperAI.closed.some((c) => c.sym === r.sym && c.exitDate === quotes[r.sym][3])).sort((a, b) => b.pred - a.pred);
     const perSector = {};
     for (const p of paperAI.open) { const sec = rowBy[p.sym]?.sector || '-'; perSector[sec] = (perSector[sec] || 0) + 1; }

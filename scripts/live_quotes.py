@@ -36,7 +36,8 @@ QUOTE_URL = "https://query1.finance.yahoo.com/v7/finance/quote"
 CHUNK = 400
 INDICES = [("N225", "^N225"), ("TOPIX", "1306.T"), ("USDJPY", "JPY=X")]
 FIELDS = "regularMarketPrice,regularMarketPreviousClose,regularMarketOpen,regularMarketDayHigh,regularMarketDayLow,regularMarketVolume,regularMarketTime"
-OPEN, LUNCH_START, LUNCH_END, CLOSE = dt.time(8, 59), dt.time(11, 31), dt.time(12, 29), dt.time(15, 31)
+# データは約20分遅れなので、前場の終わり（11:30）と大引け（15:30）の値が届くまで少し長く動かす
+OPEN, LUNCH_START, LUNCH_END, CLOSE = dt.time(8, 59), dt.time(11, 52), dt.time(12, 29), dt.time(15, 52)
 MAX_RUN_SEC = 5 * 3600 + 40 * 60
 
 
