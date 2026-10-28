@@ -84,7 +84,7 @@ jobs:
         if: steps.fetch.outcome == 'success'
         continue-on-error: true
         env:
-          MODEL_VARIANT: ${{ vars.MODEL_VARIANT || 'B_no_market' }}
+          MODEL_VARIANT: ${{ vars.MODEL_VARIANT || 'B_rank' }}
           EXP_SET: ${{ inputs.exp_set || 'base' }}
         run: |
           set -o pipefail
@@ -100,7 +100,7 @@ jobs:
         if: steps.fetch.outcome == 'success'
         continue-on-error: true
         env:
-          MODEL_VARIANT: ${{ vars.MODEL_VARIANT || 'B_no_market' }}
+          MODEL_VARIANT: ${{ vars.MODEL_VARIANT || 'B_rank' }}
           EXP_SET: ${{ inputs.exp_set || 'base' }}
         run: |
           set -o pipefail

@@ -245,7 +245,7 @@ EXP_SETS = {"base": ["A_all", "B_no_market", "C_no_market_sector", "D_sector_neu
             "sector": ["B_no_market", "C_no_market_sector", "D_sector_neutral"],
             "adapt": ["B_no_market", "B_w250", "B_w120", "B_weekly", "B_decay60", "B_rank", "C_rank", "R_reversal5"],
             "rank": ["B_no_market", "B_rank", "C_rank"]}
-DEFAULT_VARIANT = os.environ.get("MODEL_VARIANT") or "B_no_market"  # 2026-10 の比較で最も安定（IC 0.077・上位2% +0.68%・月勝率86%）
+DEFAULT_VARIANT = os.environ.get("MODEL_VARIANT") or "B_rank"  # 2026-10-28 の比較で、1週間・1か月とも B_no_market より成績・安定性が上（順位で学ぶ）
 
 
 def add_target(df):
@@ -360,6 +360,8 @@ def evaluate(df, cols, label="ex", quiet=False, ev=("ex", "fwd"), opts=None):
                                  "sectorConcentration": float(top2sn.groupby("date")["sector"].agg(lambda x: x.value_counts(normalize=True).iloc[0]).mean())},
         "top2Risk": {"worstDay5pct": float(daily.quantile(0.05)), "negDays": float((daily < 0).mean())},
         "monthlyTop2pct": {k: float(v) for k, v in monthly.items()},
+        # 予測の値 → 市場平均との差（%）への換算（順位で学ぶ設計は予測が「順位の点数」なので、検証結果から換算の傾きを求める）
+        "calib": {"slope": float(np.polyfit(p["pred"].to_numpy(), p["ex"].to_numpy(), 1)[0])},
         "recent": {  # 直近の成績（相場の流れが変わったときに強いか）
             "top2_3m": float(top2.loc[top2["date"] >= sorted(p["date"].unique())[-63], "ex"].mean()),
             "top2_1m": float(top2.loc[top2["date"] >= sorted(p["date"].unique())[-21], "ex"].mean()),
@@ -434,13 +436,14 @@ def main():
         cols = feature_cols(df, variant)
     if model is None:
         if not args.no_eval:
-            report = evaluate(df, cols, label)
+            report = evaluate(df, cols, label, ev=eval_cols(variant), opts=variant.get("opts"))
             if report:
                 report["variant"] = DEFAULT_VARIANT
         usable = df[df["liquid"] & df[label].notna()]
         dates = sorted(usable["date"].unique())
         usable = usable[usable["date"] >= dates[max(0, len(dates) - TRAIN_WINDOW)]]
-        model = train(usable, cols, label)
+        vo = variant.get("opts") or {}
+        model = train(usable, cols, label, vo.get("half_life"), vo.get("rank_label"))
         os.makedirs(args.cache, exist_ok=True)
         open(os.path.join(args.out, "model_trained"), "w").close()  # このモデルをキャッシュに保存させる目印
         model.save_model(model_path)
@@ -460,6 +463,12 @@ def main():
     liq_mask = last["liquid"].to_numpy()
     center = float(np.mean(pred[liq_mask])) if liq_mask.any() else 0.0
     pred = pred - center
+    # 順位で学ぶ設計は、予測を「市場平均との差（の目安）」に換算して表示する
+    scale = 1.0
+    if (variant.get("opts") or {}).get("rank_label"):
+        # 傾きがマイナス（検証で当たっていない）でも順位の向きは変えない
+        scale = max(float((report or {}).get("calib", {}).get("slope") or 0.05), 0.01)
+        pred = pred * scale
     last = last.assign(pred=pred)
     liq = last[last["liquid"]]
     ranks = liq["pred"].rank(pct=True)
@@ -470,6 +479,7 @@ def main():
     reasons = {}
     if len(liq):
         contrib = model.predict(liq[cols], pred_contrib=True)  # 最後の列は全銘柄共通の基準値
+        contrib = contrib * scale
         base = float(contrib[0, -1]) * 100 if len(contrib) else 0.0
         vals = liq[cols].to_numpy()
         for sym, row, v in zip(liq["sym"].astype(str), contrib[:, :-1], vals):
