@@ -643,14 +643,21 @@ function renderPickTrack() {
   const tr = state.server.ai_track;
   const box = $('#picks-track');
   const days = (tr?.days || []).filter((d) => d.top && d.elapsed >= 1);
-  if (!days.length) { box.innerHTML = ''; return; }
+  const md = (d) => `${+d.slice(5, 7)}/${+d.slice(8, 10)}`;
+  if (!days.length) {
+    const pt = tr?.previous?.total;
+    box.innerHTML = tr?.since ? `<a href="#" data-goto="perf" class="track"><b>本番の答え合わせ</b>
+      <span>新しいモデル（${md(tr.since)}〜）の結果は、明日から毎日ここに出ます。</span>
+      ${pt?.days ? `<small>前のモデルは ${pt.days}日分で上位銘柄が市場平均より ${pctf(pt.topExcess, 1)}（勝ち ${Math.round((pt.topWin || 0) * 100)}%）でした。新しいモデルも上位は銀行株に偏っているので、参考程度に見てください。</small>` : ''}</a>` : '';
+    return;
+  }
   const t = tr.total;
   const avg = days.reduce((a, d) => a + d.top.excess, 0) / days.length;
   const bad = avg < 0;
-  const md = (d) => `${+d.slice(5, 7)}/${+d.slice(8, 10)}`;
   box.innerHTML = `<a href="#" data-goto="perf" class="track ${bad ? 'bad' : 'good'}">
     <b>本番の答え合わせ</b>
-    <span>${t?.days ? `5日後まで確定した${t.days}日分：上位銘柄は市場平均より <b class="mono">${pctf(t.topExcess, 1)}</b>` : `途中経過（${md(days.at(-1).date)}〜${md(days[0].date)}の予測）：上位銘柄は市場平均より <b class="mono">${pctf(avg, 1)}</b>`}</span>
+    <span>${tr.since ? `新しいモデル（${md(tr.since)}〜）` : ''}${t?.days ? `5日後まで確定した${t.days}日分：上位銘柄は市場平均より <b class="mono">${pctf(t.topExcess, 1)}</b>` : `途中経過（${md(days.at(-1).date)}〜${md(days[0].date)}の予測）：上位銘柄は市場平均より <b class="mono">${pctf(avg, 1)}</b>`}</span>
+    ${tr.previous?.total?.days ? `<small>前のモデル：${tr.previous.total.days}日分で ${pctf(tr.previous.total.topExcess, 1)}（勝ち ${Math.round((tr.previous.total.topWin || 0) * 100)}%）</small>` : ''}
     ${bad ? '<small>いまは予測が外れている時期です。上位は特定の業種に偏りやすく、その業種が逆に動くとまとめて外れます。参考程度に見てください。</small>' : '<small>過去の検証どおりに当たっているか、毎日確認しています。</small>'}
   </a>`;
 }

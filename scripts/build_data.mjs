@@ -167,7 +167,13 @@ async function main() {
   if (reasonsDoc) writeJson(path.join(OUT, 'ai_reasons.json'), reasonsDoc);
   const aiLog = updateLog(readJson(path.join(PREV, 'ai_log.json'), null), predDoc?.date, preds);
   writeJson(path.join(OUT, 'ai_log.json'), aiLog);
-  writeJson(path.join(OUT, 'ai_track.json'), { updatedAt: now.toISOString(), ...evaluateLog(aiLog, history, Object.fromEntries(Object.entries(meta).map(([k, v]) => [k, v.name]))) });
+  // 答え合わせは「今のモデルになってから」の分で集計（2026-10-28 に順位で学ぶ設計へ変更）。それ以前の分は previous に要約
+  const AI_TRACK_SINCE = '2026-10-28';
+  const nameMap = Object.fromEntries(Object.entries(meta).map(([k, v]) => [k, v.name]));
+  const part = (keep) => ({ days: Object.fromEntries(Object.entries(aiLog.days || {}).filter(([d]) => keep(d))) });
+  const prevTrack = evaluateLog(part((d) => d < AI_TRACK_SINCE), history, nameMap);
+  writeJson(path.join(OUT, 'ai_track.json'), { updatedAt: now.toISOString(), since: AI_TRACK_SINCE, ...evaluateLog(part((d) => d >= AI_TRACK_SINCE), history, nameMap),
+    previous: { until: AI_TRACK_SINCE, note: '前の設計のモデル', total: prevTrack.total } });
 
   // 4) スクリーナー（地合いフィルターは検証で逆効果だったため、score には反映しない。penalty は参考値）
   const details = {};
