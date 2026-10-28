@@ -243,7 +243,8 @@ VARIANTS = {
 EXP_SETS = {"base": ["A_all", "B_no_market", "C_no_market_sector", "D_sector_neutral"],
             "us": ["B_no_market", "B_us_prev", "B_open", "B_open_us"],
             "sector": ["B_no_market", "C_no_market_sector", "D_sector_neutral"],
-            "adapt": ["B_no_market", "B_w250", "B_w120", "B_weekly", "B_decay60", "B_rank", "C_rank", "R_reversal5", "R_momentum60"]}
+            "adapt": ["B_no_market", "B_w250", "B_w120", "B_weekly", "B_decay60", "B_rank", "C_rank", "R_reversal5"],
+            "rank": ["B_no_market", "B_rank", "C_rank"]}
 DEFAULT_VARIANT = os.environ.get("MODEL_VARIANT") or "B_no_market"  # 2026-10 の比較で最も安定（IC 0.077・上位2% +0.68%・月勝率86%）
 
 
