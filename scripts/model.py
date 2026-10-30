@@ -182,7 +182,35 @@ def _num(x):
         return None
 
 
-def fins_table(fins_dir):
+def tdnet_rows(tdnet_dir, after):
+    """J-Quants（無料プランは直近12週間なし）の後の分を、TDnet の決算短信・業績予想の修正の読み取りで補う"""
+    import glob
+    rows = []
+    for path in glob.glob(os.path.join(tdnet_dir, "*.json")):
+        for x in load(path, {}).get("items", []):
+            d, tm, code, _n, _t, cat, *rest = x
+            extra = rest[2] if len(rest) > 2 else None
+            if d <= after or not extra:
+                continue
+            base = {"DiscDate": d, "DiscTime": (tm or "15:30") + ":00", "Code": code, "src": "tdnet"}
+            if cat == "earnings" and extra.get("profit") is not None:
+                q = extra.get("q")
+                op_key = "OP" if extra.get("m") == "営業利益" else "OdP"
+                fy = extra.get("fy") or {}
+                r = {**base, "CurPerType": {1: "1Q", 2: "2Q", 3: "3Q", 4: "FY"}.get(q, ""), op_key: extra.get("profit"), "Sales": extra.get("sales"),
+                     "BPS": extra.get("bps"), "_yoy_profit": None if extra.get("profitYoY") is None else extra["profitYoY"] / 100,
+                     "_yoy_sales": None if extra.get("salesYoY") is None else extra["salesYoY"] / 100}
+                if q == 4:
+                    r.update({"Nx" + ("FOP" if op_key == "OP" else "FOdP"): fy.get("profit"), "NxFEPS": extra.get("epsF"), "NxFDivAnn": extra.get("div")})
+                else:
+                    r.update({"F" + op_key: fy.get("profit"), "FEPS": extra.get("epsF"), "FDivAnn": extra.get("div")})
+                rows.append(r)
+            elif cat in ("up", "down", "revise") and extra.get("p") == "通期" and extra.get("pct") is not None:
+                rows.append({**base, "CurPerType": "", "_fc_rev": extra["pct"]})
+    return rows
+
+
+def fins_table(fins_dir, tdnet_dir=None):
     """決算サマリーを銘柄ごとの「いつから分かったか」付きの表にする（未来の情報を使わないため）。
     15:30（大引け）より前の開示はその日の終値から、15:30以降の開示は翌営業日から使える"""
     import glob
@@ -191,7 +219,15 @@ def fins_table(fins_dir):
         rows += load(path, {}).get("items", [])
     if not rows:
         return None, None
+    jq_end = max(r.get("DiscDate", "") for r in rows)
+    if tdnet_dir:
+        rows += tdnet_rows(tdnet_dir, jq_end)
     df = pd.DataFrame(rows)
+    for c in ("CurPerEn", "CurFYEn", "src", "_yoy_profit", "_yoy_sales", "_fc_rev", "NxFOdP"):
+        if c not in df:
+            df[c] = np.nan
+    df["CurPerEn"] = df["CurPerEn"].fillna("")
+    df["CurFYEn"] = df["CurFYEn"].fillna("")
     df["code"] = df["Code"].astype(str).str[:4]
     df["ts"] = pd.to_datetime(df["DiscDate"] + " " + df["DiscTime"].fillna("00:00:00").replace("", "00:00:00"), errors="coerce")
     for c in ("Sales", "OP", "OdP", "NP", "EPS", "BPS", "FSales", "FOP", "FOdP", "FEPS", "NxFOP", "NxFEPS", "FDivAnn", "NxFDivAnn"):
@@ -209,14 +245,15 @@ def fins_table(fins_dir):
     df = df.merge(prev.drop_duplicates(["code", "CurPerType", "per_en_next"], keep="last"),
                   left_on=["code", "CurPerType", "per_en"], right_on=["code", "CurPerType", "per_en_next"], how="left")
     yoy = lambda a, b: ((a - b) / b.abs()).where(b.abs() > 0).clip(-3, 3)  # noqa: E731
-    df["fn_profit_yoy"] = yoy(df["profit"], df["profit_prev"])
-    df["fn_sales_yoy"] = yoy(df["Sales"], df["sales_prev"])
+    df["fn_profit_yoy"] = yoy(df["profit"], df["profit_prev"]).fillna(pd.to_numeric(df["_yoy_profit"], errors="coerce").clip(-3, 3))
+    df["fn_sales_yoy"] = yoy(df["Sales"], df["sales_prev"]).fillna(pd.to_numeric(df["_yoy_sales"], errors="coerce").clip(-3, 3))
     # 通期予想に対する進捗（四半期のみ）
     df["fn_progress"] = ((df["profit"] / df["fprofit"]) - df["q"] * 0.25).where((df["fprofit"] > 0) & (df["q"] < 4)).clip(-1, 1)
     # 会社予想の修正：同じ決算期の、前回の予想と比べて
     df["fy"] = df["CurFYEn"]
     df["fprofit_prev"] = df.groupby(["code", "fy"])["fprofit"].transform(lambda x: x.ffill().shift(1))
-    df["fn_fc_rev"] = yoy(df["fprofit"], df["fprofit_prev"])
+    jq = df["src"] != "tdnet"
+    df["fn_fc_rev"] = yoy(df["fprofit"], df["fprofit_prev"]).where(jq).fillna(pd.to_numeric(df["_fc_rev"], errors="coerce").clip(-3, 3))
     # 割安度の材料（株価で割るのは後で）：予想EPS（本決算なら来期予想）、1株純資産、予想配当
     df["feps"] = df["FEPS"].where(df["q"] < 4, df["NxFEPS"]).where(lambda x: x.notna(), df["FEPS"])
     df["fdiv"] = df["FDivAnn"].where(df["q"] < 4, df["NxFDivAnn"]).where(lambda x: x.notna(), df["FDivAnn"])
@@ -229,7 +266,7 @@ def fins_table(fins_dir):
     # 項目ごとに「その時点で最新の値」を使う（予想修正の開示には実績が無い等）
     for c in ("fn_profit_yoy", "fn_sales_yoy", "feps", "fdiv", "bps"):
         out[c] = out.groupby("code")[c].transform(lambda x: x.ffill())
-    last = str(df["DiscDate"].max())
+    last = jq_end
     return {c: g.drop(columns=["code"]).reset_index(drop=True) for c, g in out.groupby("code")}, last
 
 
@@ -333,7 +370,7 @@ EXP_SETS = {"base": ["A_all", "B_no_market", "C_no_market_sector", "D_sector_neu
             "adapt": ["B_no_market", "B_w250", "B_w120", "B_weekly", "B_decay60", "B_rank", "C_rank", "R_reversal5"],
             "rank": ["B_no_market", "B_rank", "C_rank"],
             "fins": ["B_rank", "B_rank_fins", "C_rank_fins"]}
-DEFAULT_VARIANT = os.environ.get("MODEL_VARIANT") or "B_rank"  # 2026-10-28 の比較で、1週間・1か月とも B_no_market より成績・安定性が上（順位で学ぶ）
+DEFAULT_VARIANT = os.environ.get("MODEL_VARIANT") or "B_rank_fins"  # 2026-10-31：決算の数字を加えた設計が、1週間・1か月とも B_rank より上（比較は2026-08まで）
 
 
 def add_target(df):
@@ -476,6 +513,7 @@ def main():
     ap.add_argument("--horizon", type=int, default=5, help="何営業日後を予測するか（5＝1週間、20＝1か月）")
     ap.add_argument("--tag", default="", help="出力ファイル名に付ける印（例: 20 → predictions_20.json）")
     ap.add_argument("--fins", help="J-Quants の決算サマリー（fins ブランチ）のフォルダ")
+    ap.add_argument("--tdnet", help="TDnet の開示（tdnet ブランチ）のフォルダ。J-Quants に無い直近の分を補う")
     args = ap.parse_args()
     global H
     H = args.horizon
@@ -490,7 +528,7 @@ def main():
     need_us = args.experiment or tuple(VARIANTS[DEFAULT_VARIANT].get("drop_prefix", NO_US)) != NO_US
     us = load(os.path.join(os.path.dirname(args.market), "us.json"), {}) if need_us else {}
     need_fins = args.fins and (args.experiment or VARIANTS[DEFAULT_VARIANT].get("fins"))
-    fins, fins_end = fins_table(args.fins) if need_fins else (None, None)
+    fins, fins_end = fins_table(args.fins, args.tdnet) if need_fins else (None, None)
     if fins:
         print(f"決算サマリー {len(fins):,}銘柄（〜{fins_end}）", flush=True)
     model_path = os.path.join(args.cache, f"model{suf}.txt")

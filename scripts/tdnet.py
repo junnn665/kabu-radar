@@ -171,6 +171,12 @@ def parse_tanshin(htm):
                     out["fy"].update({"sales": g(sm[0], "Forecast", fper), "salesYoY": g("ChangeIn" + sm[0], "Forecast", fper)})
                 if q < 4 and fp > 0 and out["profit"] is not None:
                     out["progress"] = round(out["profit"] / fp, 4)  # 通期予想に対する進捗率
+            eps_f = g("NetIncomePerShare", "Forecast", fper)
+            if eps_f is not None:
+                out["epsF"] = eps_f
+            bps = g("NetAssetsPerShare", "Result", per.replace("Duration", "Instant"))
+            if bps is not None:
+                out["bps"] = bps
             dv = g("DividendPerShare", "Forecast", fper, "Annual")
             if dv is not None:
                 out["div"] = dv

@@ -169,7 +169,7 @@ async function main() {
   const aiLog = updateLog(readJson(path.join(PREV, 'ai_log.json'), null), predDoc?.date, preds);
   writeJson(path.join(OUT, 'ai_log.json'), aiLog);
   // 答え合わせは「今のモデルになってから」の分で集計（2026-10-28 に順位で学ぶ設計へ変更）。それ以前の分は previous に要約
-  const AI_TRACK_SINCE = '2026-10-28';
+  const AI_TRACK_SINCE = '2026-10-30'; // 2026-10-30：決算の数字を入れたモデルに変更
   const nameMap = Object.fromEntries(Object.entries(meta).map(([k, v]) => [k, v.name]));
   const part = (keep) => ({ days: Object.fromEntries(Object.entries(aiLog.days || {}).filter(([d]) => keep(d))) });
   const prevTrack = evaluateLog(part((d) => d < AI_TRACK_SINCE), history, nameMap);

@@ -669,7 +669,7 @@ function renderPickTrack() {
     const pt = tr?.previous?.total;
     box.innerHTML = tr?.since ? `<a href="#" data-goto="perf" class="track"><b>本番の答え合わせ</b>
       <span>新しいモデル（${md(tr.since)}〜）の結果は、明日から毎日ここに出ます。</span>
-      ${pt?.days ? `<small>前のモデルは ${pt.days}日分で上位銘柄が市場平均より ${pctf(pt.topExcess, 1)}（勝ち ${Math.round((pt.topWin || 0) * 100)}%）でした。新しいモデルも上位は銀行株に偏っているので、参考程度に見てください。</small>` : ''}</a>` : '';
+      ${pt?.days ? `<small>前のモデルは ${pt.days}日分で上位銘柄が市場平均より ${pctf(pt.topExcess, 1)}（勝ち ${Math.round((pt.topWin || 0) * 100)}%）でした。検証の数字だけでなく、ここに出る本番の結果を見てから信用してください。</small>` : ''}</a>` : '';
     return;
   }
   const t = tr.total;
@@ -1239,6 +1239,8 @@ const FEATURE_JA = {
   lturn: '売買代金', atrp: '1日の値幅', vol20: '値動きの荒さ', pos60: '60日の高安内の位置', dist250: '52週高値からの距離', gap: '窓（寄り付きの跳び）',
   body: 'ローソク足の実体', lshadow: '下ヒゲ', updays5: '直近5日の上昇日数', lprice: '株価の水準', seg: '市場区分', sector: '業種',
   n225_ret5: '日経平均の5日の値動き', n225_dev25: '日経平均の25日線乖離', vix: 'VIX（米国の不安指数）',
+  fn_profit_yoy: '決算：利益の前年比', fn_sales_yoy: '決算：売上の前年比', fn_progress: '決算：通期予想への進捗（目安との差）',
+  fn_fc_rev: '会社予想の修正', fn_ep: '予想PERの割安度', fn_bp: 'PBRの割安度', fn_dy: '予想配当利回り', fn_days: '決算発表からの日数',
 };
 
 // 判断理由の値を、人が読める形にする（モデルの入力は対数や比率なので変換する）
@@ -1250,6 +1252,12 @@ function reasonValue(k, v) {
     case 'ret1': case 'ret5': case 'ret20': case 'ret60': return p(Math.exp(v) - 1);
     case 'dev5': case 'dev25': case 'dev75': case 'slope75': case 'gap': case 'dist250': return p(v);
     case 'rsi2': case 'rsi14': return v.toFixed(0);
+    case 'fn_profit_yoy': case 'fn_sales_yoy': case 'fn_fc_rev': return p(v, 0);
+    case 'fn_progress': return `${v > 0 ? '+' : ''}${Math.round(v * 100)}pt`;
+    case 'fn_ep': return v > 0 ? `PER ${(1 / v).toFixed(1)}倍` : '赤字予想';
+    case 'fn_bp': return v > 0 ? `PBR ${(1 / v).toFixed(2)}倍` : '';
+    case 'fn_dy': return `${(v * 100).toFixed(1)}%`;
+    case 'fn_days': return `${Math.round(Math.expm1(v))}日`;
     case 'bbz': return `${v > 0 ? '+' : ''}${v.toFixed(1)}σ`;
     case 'volr': return `${Math.exp(v).toFixed(1)}倍`;
     case 'lturn': { const yen = 10 ** v; return yen >= 1e10 ? `${(yen / 1e8).toFixed(0)}億円` : `${(yen / 1e8).toFixed(1)}億円`; }
