@@ -11,7 +11,7 @@ on:
         type: boolean
         default: false
   schedule:
-    - cron: '40 23 * * 0-4'   # JST 8:40（平日）
+    - cron: '15 23 * * 0-4'   # JST 8:15（平日。GitHub側で20〜30分遅れることが多いので早めに）
     - cron: '5 1 * * 1-5'     # JST 10:05 予備
     - cron: '35 3 * * 1-5'    # JST 12:35 予備
     - cron: '20 5 * * 1-5'    # JST 14:20 予備
@@ -33,7 +33,7 @@ jobs:
         id: gate
         run: |
           H=$(TZ=Asia/Tokyo date +%H%M); D=$(TZ=Asia/Tokyo date +%u)
-          if [ "${{ inputs.test }}" = "true" ] || { [ "$D" -le 5 ] && [ "$H" -ge 0830 ] && [ "$H" -lt 1550 ]; }; then echo "run=yes" >> "$GITHUB_OUTPUT"; else echo "取引時間外（$H）"; echo "run=no" >> "$GITHUB_OUTPUT"; fi
+          if [ "${{ inputs.test }}" = "true" ] || { [ "$D" -le 5 ] && [ "$H" -ge 0800 ] && [ "$H" -lt 1550 ]; }; then echo "run=yes" >> "$GITHUB_OUTPUT"; else echo "取引時間外（$H）"; echo "run=no" >> "$GITHUB_OUTPUT"; fi
 
       - uses: actions/checkout@v5
         if: steps.gate.outputs.run == 'yes'

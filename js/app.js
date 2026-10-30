@@ -937,7 +937,7 @@ function paperBlock(p, rulesText) {
 
 function renderPaper() {
   const pa = state.server.paper_ai;
-  $('#paper-ai').innerHTML = pa ? paperBlock(pa, 'AI予測の上位1%（売買代金1億円以上）を1回¥100,000分ずつ買い、+10%利確・−5%損切り・最長5営業日で売ります。')
+  $('#paper-ai').innerHTML = pa ? paperBlock(pa, 'AI予測の上位5%（売買代金1億円以上）から同じ業種は2銘柄まで・1日5銘柄までを1回¥100,000分ずつ買い、+10%利確・−5%損切り・最長5営業日で売ります。')
     : '<p class="muted">AI予測のデータができると記録が始まります。</p>';
   const p = state.server.paper;
   if (p) {

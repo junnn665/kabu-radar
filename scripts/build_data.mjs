@@ -23,7 +23,8 @@ const MAX_NEW_PAPER = 8;    // 1回の更新で新しく買う上限
 const MAX_OPEN_PAPER = 30;  // 同時に持つ上限
 const PUBLISH_BARS = 260;   // サイトに出す日足（学習用には約3年分を持っている）
 // AI予測で売買する仮想口座のルール（予測期間が5営業日なので最長5日）
-const AI_RULES = { entryRank: 0.99, hold: 5, takeProfit: 0.1, stopLoss: -0.05, maxNew: 5, maxOpen: 20, maxPerSector: 2 };
+// 上位5%の中から、同じ業種は2銘柄までで1日最大5銘柄（ホームのAIピックと同じ考え方。上位1%だと銀行株ばかりで2銘柄しか買えなかった）
+const AI_RULES = { entryRank: 0.95, hold: 5, takeProfit: 0.1, stopLoss: -0.05, maxNew: 5, maxOpen: 25, maxPerSector: 2 };
 
 const readJson = (p, d) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return d; } };
 const writeJson = (p, v) => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, JSON.stringify(v)); };
