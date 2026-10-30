@@ -20,7 +20,7 @@ import urllib.parse
 import urllib.request
 
 BASE = "https://api.jquants.com/v2"
-KEEP = ["DiscDate", "DiscTime", "Code", "DocType", "CurPerType", "CurFYEn", "Sales", "OP", "OdP", "NP", "EPS", "BPS", "Eq", "TA",
+KEEP = ["DiscDate", "DiscTime", "Code", "DocType", "CurPerType", "CurPerEn", "CurFYEn", "Sales", "OP", "OdP", "NP", "EPS", "BPS", "Eq", "TA",
         "FSales", "FOP", "FOdP", "FNP", "FEPS", "NxFSales", "NxFOP", "NxFOdP", "NxFNp", "NxFEPS", "FDivAnn", "NxFDivAnn", "DivAnn"]
 INTERVAL = 13.0  # 1分に5回まで → 余裕をもって13秒おき
 
