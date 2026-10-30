@@ -190,7 +190,7 @@ def fetch_zip_summary(zname, kind):
                 continue
             if kind == "rvfc" and "rvfc" in base:
                 return parse_revision(zf.read(n).decode("utf-8", "replace"))
-            if kind == "sm" and re.match(r"tse-\w*sm-", base):
+            if kind == "sm" and re.match(r"tse-\w*(sm|sy)-", base):  # sy＝中間期のサマリー
                 return parse_tanshin(zf.read(n).decode("utf-8", "replace"))
     except Exception as e:  # noqa: BLE001
         print(f"XBRL {zname}: {type(e).__name__} {e}", file=sys.stderr)
