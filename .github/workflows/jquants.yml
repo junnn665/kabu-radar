@@ -1,0 +1,49 @@
+name: J-Quants 財務情報の取得
+
+# 決算短信のサマリー（過去2年・無料プランは直近12週間を除く）を fins ブランチに貯める。初回は約2時間
+on:
+  workflow_dispatch:
+    inputs:
+      probe:
+        description: '1日分だけ取って中身を確認する'
+        type: boolean
+        default: false
+  schedule:
+    - cron: '30 19 * * 0'   # 毎週月曜 JST 4:30（新しく取れるようになった週の分を追加）
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kabu-radar-jquants
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: 取得
+        env:
+          JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
+        run: |
+          git clone -q --depth 1 -b fins "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" fins 2>/dev/null \
+            || (mkdir fins && cd fins && git init -q -b fins)
+          if [ "${{ inputs.probe }}" = "true" ]; then
+            python scripts/jquants_fins.py --repo fins --probe 2>&1 | tee jq.log
+            grep "^PROBE" jq.log | while read -r l; do echo "::notice title=J-Quants::${l:0:3000}"; done
+            exit 0
+          fi
+          python -u scripts/jquants_fins.py --repo fins --years 2 --max-minutes 300 2>&1 | tee jq.log
+          echo "::notice title=J-Quants::$(tail -n 1 jq.log)"
+      - name: 保存
+        if: ${{ !inputs.probe }}
+        run: |
+          cd fins
+          git add -A
+          git -c user.name="kabu-radar-bot" -c user.email="actions@users.noreply.github.com" commit -qm "fins $(date -u +%FT%TZ)" || exit 0
+          git push -q "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:fins
