@@ -148,7 +148,7 @@ jobs:
         continue-on-error: true
         run: |
           git fetch -q --depth 1 origin tdnet && mkdir -p tdnet && git archive origin/tdnet | tar -x -C tdnet \
-            && python scripts/tdnet.py --repo tdnet --export data/tdnet.json --since-days 45
+            && python scripts/tdnet.py --repo tdnet --export data/tdnet.json --since-days 45 --all-dir data/tdnet_all
 
       - name: 状態を data ブランチに保存（日足は含めない・最新1コミットのみ）
         if: steps.fetch.outcome == 'success'

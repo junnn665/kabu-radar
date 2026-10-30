@@ -427,9 +427,30 @@ const revText = (rev, long = false) => {
   const n = (v) => (v == null ? '—' : v.toLocaleString('ja-JP'));
   return `${rev.p}の${rev.m} ${n(rev.prev)}→${n(rev.cur)}${pc ? `（前回予想比 ${pc}）` : ''}${rev.sales != null && rev.m !== '売上高' ? `・売上高 ${rev.sales > 0 ? '+' : ''}${(rev.sales * 100).toFixed(1)}%` : ''}`;
 };
-const tdLabel = (c, rev) => `${TD_CAT[c]?.label || 'その他'}${(c === 'up' || c === 'down') && rev?.pct != null ? ` ${revText(rev)}` : ''}`;
-const recentDisclosures = (s, days = 5) => disclosuresOf(s).filter(([d, , c]) => daysSince(d) <= days && TD_CAT[c] && c !== 'earnings' && c !== 'revise');
-const eventChips = (s) => recentDisclosures(s).slice(0, 2).map(([, , c, , , rev]) => `<span class="ev td ${TD_CAT[c].tone}">📢 ${esc(tdLabel(c, rev))}</span>`).join('')
+// 決算短信：前年同期比・進捗率
+const QLABEL = { 1: '第1四半期', 2: '第2四半期（中間）', 3: '第3四半期', 4: '通期（本決算）' };
+const yoyText = (v) => (v == null ? '' : `${v > 0 ? '+' : ''}${v.toFixed(Math.abs(v) < 10 ? 1 : 0)}%`);
+const finTone = (f) => (!f || f.profitYoY == null ? '' : f.profitYoY >= 10 ? 'good' : f.profitYoY <= -10 ? 'bad' : '');
+const finShort = (f) => (f?.profitYoY != null ? `${f.m.replace('利益', '益')}${yoyText(f.profitYoY)}` : '');
+const progressNote = (f) => {
+  if (f?.progress == null || f.q >= 4) return '';
+  const goal = f.q * 0.25, diff = f.progress - goal;
+  return `進捗 ${Math.round(f.progress * 100)}%（目安${Math.round(goal * 100)}%${diff >= 0.05 ? '・順調' : diff <= -0.05 ? '・遅れ' : ''}）`;
+};
+const finLong = (f) => {
+  if (!f) return '';
+  const n = (v) => (v == null ? '—' : v.toLocaleString('ja-JP'));
+  const parts = [];
+  if (f.sales != null) parts.push(`売上 ${n(f.sales)}${f.salesYoY != null ? `（${yoyText(f.salesYoY)}）` : ''}`);
+  parts.push(`${f.m} ${n(f.profit)}${f.profitYoY != null ? `（${yoyText(f.profitYoY)}）` : ''}`);
+  const fy = f.fy ? `${f.q >= 4 ? '来期' : '通期'}予想の${f.m} ${n(f.fy.profit)}${f.fy.profitYoY != null ? `（${yoyText(f.fy.profitYoY)}）` : ''}` : '';
+  return `${QLABEL[f.q] || ''}${f.cons ? '' : '（単体）'}：${parts.join('・')}　前年同期比${fy ? `／${fy}` : ''}${progressNote(f) ? `・${progressNote(f)}` : ''}${f.div != null ? `／配当予想 年${f.div}円` : ''}`;
+};
+const tdLabel = (c, rev) => `${TD_CAT[c]?.label || 'IR'}${(c === 'up' || c === 'down') && rev?.pct != null ? ` ${revText(rev)}` : c === 'earnings' && finShort(rev) ? ` ${finShort(rev)}` : ''}`;
+const tdTone = (c, x) => (c === 'earnings' ? finTone(x) : TD_CAT[c]?.tone || '');
+const recentDisclosures = (s, days = 5) => disclosuresOf(s).filter(([d, , c, , , x]) => daysSince(d) <= days && TD_CAT[c] && c !== 'revise' && (c !== 'earnings' || x?.profitYoY != null));
+const latestEarnings = (s) => disclosuresOf(s).find(([, , c, , , x]) => c === 'earnings' && x);
+const eventChips = (s) => recentDisclosures(s).slice(0, 2).map(([, , c, , , rev]) => `<span class="ev td ${tdTone(c, rev)}">${c === 'earnings' ? '📊' : '📢'} ${esc(tdLabel(c, rev))}</span>`).join('')
   + eventBadges(s).map((b) => `<span class="ev ${b.days <= 3 ? 'hot' : ''}">${b.kind === 'earn' ? '📅' : '💰'} ${esc(b.text)}</span>`).join('');
 
 const PERF_TABS = ['review', 'paper', 'backtest'];
@@ -798,13 +819,19 @@ function renderDetail() {
 
   renderMemos(s);
 
-  // 適時開示
-  const tds = disclosuresOf(s).slice(0, 8);
+  // 最新の決算（決算短信の数字）
+  const le = latestEarnings(s);
+  $('#d-earn').innerHTML = le ? `<div class="earn ${finTone(le[5])}"><div class="earn-head"><b>最新の決算</b><small>${+le[0].slice(5, 7)}/${+le[0].slice(8, 10)} 発表</small></div>
+      <div class="earn-body">${esc(finLong(le[5]))}</div></div>` : '';
+  // 適時開示・IR（銘柄を開いたときに、その銘柄の全部の開示を読み込む）
   const base = state.server.tdnet?.base || 'https://www.release.tdnet.info/inbs/';
+  const all = state.irCache?.[s];
+  if (all === undefined && state.provider?.static) loadIr(s);
+  const tds = (all || disclosuresOf(s)).slice(0, 15);
   $('#d-tdnet').innerHTML = tds.length
-    ? tds.map(([d, tm, c, title, pdf, rev]) => `<li><span class="ev td ${TD_CAT[c]?.tone || ''}">${esc(tdLabel(c, rev))}</span>
-        ${pdf ? `<a href="${esc(base + pdf)}" target="_blank" rel="noopener">${esc(title)}</a>` : esc(title)}${rev ? `<div class="rev ${rev.pct > 0 ? 'up' : rev.pct < 0 ? 'down' : ''}">${esc(revText(rev, true))}</div>` : ''}<small>${+d.slice(5, 7)}/${+d.slice(8, 10)} ${esc(tm)}</small></li>`).join('')
-    : `<li class="muted">${state.server.tdnet ? '直近45日に、株価に関係しやすい開示はありません' : '適時開示は自動取得データのモードで表示されます'}</li>`;
+    ? tds.map(([d, tm, c, title, pdf, x]) => `<li><span class="ev td ${tdTone(c, x)}">${esc(tdLabel(c, x))}</span>
+        ${pdf ? `<a href="${esc(base + pdf)}" target="_blank" rel="noopener">${esc(title)}</a>` : esc(title)}${(c === 'up' || c === 'down' || c === 'revise') && x ? `<div class="rev ${x.pct > 0 ? 'up' : x.pct < 0 ? 'down' : ''}">${esc(revText(x, true))}</div>` : c === 'earnings' && x ? `<div class="rev ${finTone(x) === 'good' ? 'up' : finTone(x) === 'bad' ? 'down' : ''}">${esc(finLong(x))}</div>` : ''}<small>${+d.slice(5, 7)}/${+d.slice(8, 10)} ${esc(tm)}</small></li>`).join('')
+    : `<li class="muted">${state.server.tdnet ? '直近4か月に開示はありません' : '適時開示は自動取得データのモードで表示されます'}</li>`;
 
   // ニュース
   const ns = newsOf(s);
@@ -913,6 +940,9 @@ const FUNDA_FILTERS = {
   revup: { label: '業績の上方修正（30日以内）', test: (r) => disclosuresOf(r.sym).some(([d, , c]) => c === 'up' && daysSince(d) <= 30) },
   revdown: { label: '業績の下方修正（30日以内）', test: (r) => disclosuresOf(r.sym).some(([d, , c]) => c === 'down' && daysSince(d) <= 30) },
   buyback: { label: '自社株買いの発表（30日以内）', test: (r) => disclosuresOf(r.sym).some(([d, , c]) => c === 'buyback' && daysSince(d) <= 30) },
+  goodearn: { label: '好決算（増収増益・30日以内）', test: (r) => disclosuresOf(r.sym).some(([d, , c, , , x]) => c === 'earnings' && daysSince(d) <= 30 && x?.profitYoY > 0 && (x.salesYoY == null || x.salesYoY > 0)) },
+  progress: { label: '通期予想に対して進捗が順調（30日以内の決算）', test: (r) => { const e = latestEarnings(r.sym); return !!e && daysSince(e[0]) <= 30 && e[5].progress != null && e[5].q < 4 && e[5].progress - e[5].q * 0.25 >= 0.05; } },
+  badearn: { label: '減益の決算（30日以内）', test: (r) => disclosuresOf(r.sym).some(([d, , c, , , x]) => c === 'earnings' && daysSince(d) <= 30 && x?.profitYoY < 0) },
   value: { label: '割安×上昇トレンド', test: (r) => ((r.pbr != null && r.pbr < 1.2) || (r.per != null && r.per < 15)) && r.ids.includes('uptrend') },
 };
 
@@ -1007,7 +1037,7 @@ function holdingView(h) {
   if (lv && price != null && price <= lv.stop) warns.push({ hot: true, text: `損切りライン ${fmt(lv.stop)} 割れ` });
   if (lv && price != null && price >= lv.target) warns.push({ text: `利確目安 ${fmt(lv.target)} 到達` });
   for (const b of eventBadges(h.sym)) if (b.days <= 7) warns.push({ hot: b.days <= 3, text: b.text });
-  for (const [d, , c, , , rev] of recentDisclosures(h.sym, 7)) warns.push({ hot: TD_CAT[c].tone === 'bad', text: `${tdLabel(c, rev)}の開示（${+d.slice(5, 7)}/${+d.slice(8, 10)}）` });
+  for (const [d, , c, , , rev] of recentDisclosures(h.sym, 7)) warns.push({ hot: tdTone(c, rev) === 'bad', text: `${tdLabel(c, rev)}の開示（${+d.slice(5, 7)}/${+d.slice(8, 10)}）` });
   return { ...h, price, manual, cur, value, pnl, pnlPct: price != null ? price / h.cost - 1 : null, lv, a, ai, warns };
 }
 
@@ -1306,6 +1336,17 @@ function renderBacktest() {
 }
 
 // ================= 操作 =================
+// 銘柄ごとの全部の開示（IR）。無ければ重要な開示だけ表示
+async function loadIr(s) {
+  state.irCache = state.irCache || {};
+  state.irCache[s] = null;
+  try {
+    const d = await state.provider.json(`tdnet_all/${encodeURIComponent(s)}.json`);
+    state.irCache[s] = d.items || [];
+  } catch { state.irCache[s] = disclosuresOf(s); }
+  if (state.selected === s) renderDetail();
+}
+
 function select(s) {
   state.selected = s;
   document.body.classList.add('sheet-open');

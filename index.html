@@ -94,6 +94,9 @@
             <option value="revup">業績の上方修正（30日以内）</option>
             <option value="revdown">業績の下方修正（30日以内）</option>
             <option value="buyback">自社株買いの発表（30日以内）</option>
+            <option value="goodearn">好決算（増収増益・30日以内）</option>
+            <option value="progress">通期予想に対して進捗が順調</option>
+            <option value="badearn">減益の決算（30日以内）</option>
           </select>
           <input id="scr-q" placeholder="銘柄名・コードで絞り込み" />
           <label class="check small"><input type="checkbox" id="scr-liquid" checked /> 売買代金1億円以上のみ</label>
@@ -219,7 +222,8 @@
             <button id="memo-save" class="mini">メモを保存</button>
           </div>
           <ul id="d-memos" class="memos"></ul>
-          <h3 class="mt">適時開示 <small class="muted">TDnet</small></h3>
+          <div id="d-earn"></div>
+          <h3 class="mt">適時開示・IR <small class="muted">TDnet・直近4か月</small></h3>
           <ul id="d-tdnet" class="news"></ul>
           <h3 class="mt">ニュース</h3>
           <ul id="d-news" class="news"></ul>

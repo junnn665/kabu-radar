@@ -113,6 +113,104 @@ def parse_revision(htm):
     return None
 
 
+PROFIT = [("OperatingIncome", "営業利益"), ("OrdinaryIncome", "経常利益"), ("ProfitAttributableToOwnersOfParent", "純利益"), ("NetIncome", "純利益")]
+SALES = [("NetSales", "売上高"), ("OperatingRevenues", "営業収益"), ("OrdinaryRevenues", "経常収益"), ("NetSalesOfCompletedConstructionContracts", "売上高")]
+
+
+def _facts(htm):
+    """ix:nonFraction の値を {(項目, 期間, 連結/単体, 実績/予想): 値}"""
+    htm = re.sub(r"<ix:nonFraction[^>]*/>", "", htm)
+    vals = {}
+    for attrs, text in FACT.findall(htm):
+        a = dict(ATTR.findall(attrs))
+        ctx = a.get("contextRef", "")
+        t = TAG.sub("", text).replace(",", "").strip()
+        if not re.fullmatch(r"-?\d+(\.\d+)?", t):
+            continue
+        m = re.match(r"^(\w+?(?:Duration|Instant))_(.*)$", ctx)
+        if not m:
+            continue
+        rest = m.group(2)
+        cons = "Consolidated" if "_ConsolidatedMember" in "_" + rest or rest.startswith("ConsolidatedMember") else ("NonConsolidated" if "NonConsolidatedMember" in rest else None)
+        kind = next((k for k in ("Result", "Forecast", "Upper", "Lower") if f"{k}Member" in rest), None)
+        if not cons or not kind:
+            continue
+        sub = "Annual" if "AnnualMember" in rest else ("Q2" if "SecondQuarterMember" in rest else ("YE" if "YearEndMember" in rest else ""))
+        vals[(a.get("name", "").split(":")[-1], m.group(1), cons, kind, sub)] = float(t) * (-1 if a.get("sign") == "-" else 1)
+    return vals
+
+
+def parse_tanshin(htm):
+    """決算短信のサマリーから：今期（累計）の実績と前年同期比、通期予想、進捗率、配当予想"""
+    v = _facts(htm)
+    if not v:
+        return None
+    periods = [("CurrentAccumulatedQ1Duration", 1), ("CurrentAccumulatedQ2Duration", 2), ("CurrentAccumulatedQ3Duration", 3), ("CurrentYearDuration", 4)]
+    for cons in ("Consolidated", "NonConsolidated"):
+        for per, q in periods:
+            def g(name, kind="Result", period=per, sub=""):
+                x = v.get((name, period, cons, kind, sub))
+                if x is None and kind == "Forecast":
+                    lo, hi = v.get((name, period, cons, "Lower", sub)), v.get((name, period, cons, "Upper", sub))
+                    if lo is not None and hi is not None:
+                        x = (lo + hi) / 2
+                return x
+            pm = next(((k, l) for k, l in PROFIT if g(k) is not None), None)
+            if not pm:
+                continue
+            sm = next(((k, l) for k, l in SALES if g(k) is not None), None)
+            out = {"q": q, "cons": cons == "Consolidated", "m": pm[1], "profit": g(pm[0]), "profitYoY": g("ChangeIn" + pm[0])}
+            if sm:
+                out.update({"sales": g(sm[0]), "salesYoY": g("ChangeIn" + sm[0])})
+            # 通期の会社予想（四半期なら今期、本決算なら来期）
+            fper = "CurrentYearDuration" if q < 4 else "NextYearDuration"
+            fp = g(pm[0], "Forecast", fper)
+            if fp is not None:
+                out["fy"] = {"profit": fp, "profitYoY": g("ChangeIn" + pm[0], "Forecast", fper)}
+                if sm and g(sm[0], "Forecast", fper) is not None:
+                    out["fy"].update({"sales": g(sm[0], "Forecast", fper), "salesYoY": g("ChangeIn" + sm[0], "Forecast", fper)})
+                if q < 4 and fp > 0 and out["profit"] is not None:
+                    out["progress"] = round(out["profit"] / fp, 4)  # 通期予想に対する進捗率
+            dv = g("DividendPerShare", "Forecast", fper, "Annual")
+            if dv is not None:
+                out["div"] = dv
+            return out
+    return None
+
+
+def fetch_zip_summary(zname, kind):
+    """kind='rvfc'（業績予想の修正）か 'sm'（決算短信サマリー）"""
+    try:
+        req = urllib.request.Request(BASE + zname, headers=UA)
+        with urllib.request.urlopen(req, timeout=30) as r:
+            zf = zipfile.ZipFile(io.BytesIO(r.read()))
+        for n in zf.namelist():
+            base = n.split("/")[-1]
+            if not base.endswith("ixbrl.htm"):
+                continue
+            if kind == "rvfc" and "rvfc" in base:
+                return parse_revision(zf.read(n).decode("utf-8", "replace"))
+            if kind == "sm" and re.match(r"tse-\w*sm-", base):
+                return parse_tanshin(zf.read(n).decode("utf-8", "replace"))
+    except Exception as e:  # noqa: BLE001
+        print(f"XBRL {zname}: {type(e).__name__} {e}", file=sys.stderr)
+    return None
+
+
+def add_earnings(items):
+    """決算短信には、売上・利益の前年同期比、通期予想と進捗率などを付ける"""
+    n = 0
+    for x in items:
+        if x[5] == "earnings" and len(x) > 7 and x[7]:
+            fin = fetch_zip_summary(x[7], "sm")
+            time.sleep(0.3)
+            while len(x) < 9:
+                x.append(None)
+            x[8] = fin
+            n += fin is not None
+    return n
+
+
 def fetch_revision(zname):
     try:
         req = urllib.request.Request(BASE + zname, headers=UA)
@@ -189,7 +287,7 @@ def collect(repo, days, refresh=False):
     today = dt.datetime.now(JST).date()
     os.makedirs(repo, exist_ok=True)
     months = {}
-    total, new_days, revs = 0, 0, 0
+    total, new_days, revs, earns = 0, 0, 0, 0
     for i in range(days, -1, -1):
         day = today - dt.timedelta(days=i)
         if day.weekday() >= 5:
@@ -202,6 +300,7 @@ def collect(repo, days, refresh=False):
         try:
             items = fetch_day(day)
             revised = add_revisions(items)
+            earned = add_earnings(items)
         except Exception as e:  # noqa: BLE001
             print(f"{day}: {type(e).__name__} {e}", file=sys.stderr)
             continue
@@ -210,6 +309,7 @@ def collect(repo, days, refresh=False):
             doc["fetched"].append(day.isoformat())
         total += len(items)
         revs += revised
+        earns += earned
         new_days += 1
         time.sleep(0.5)
     for ym, doc in months.items():
@@ -221,19 +321,32 @@ def collect(repo, days, refresh=False):
     for doc in months.values():
         for x in doc["items"]:
             cats[x[5]] = cats.get(x[5], 0) + 1
-    print(f"{new_days}日分を取得（{total}件・業績修正の数字 {revs}件）。分類: {json.dumps(cats, ensure_ascii=False)}")
+    print(f"{new_days}日分を取得（{total}件・業績修正の数字 {revs}件・決算短信の数字 {earns}件）。分類: {json.dumps(cats, ensure_ascii=False)}")
 
 
-def export(repo, out, since_days):
-    """サイト用：直近の開示を銘柄ごとに（「その他」は件数が多いので除く）"""
-    since = (dt.datetime.now(JST).date() - dt.timedelta(days=since_days)).isoformat()
-    by = {}
+def export(repo, out, since_days, all_dir=None, all_days=120):
+    """サイト用：直近の重要な開示を銘柄ごとに（「その他」は件数が多いので除く）。
+    all_dir を指定すると、銘柄ごとの全部の開示（IR）を all_dir/<コード>.json に（銘柄を開いたときに読む）"""
+    today = dt.datetime.now(JST).date()
+    since = (today - dt.timedelta(days=since_days)).isoformat()
+    since_all = (today - dt.timedelta(days=all_days)).isoformat()
+    by, every = {}, {}
     for path in sorted(glob.glob(os.path.join(repo, "*.json"))):
         for x in load(path, {}).get("items", []):
             d, tm, code, _name, title, cat, pdf = x[:7]
+            extra = x[8] if len(x) > 8 else None
+            if d >= since_all:
+                every.setdefault(code, []).append([d, tm, cat, title, pdf, extra])
             if d < since or cat == "other":
                 continue
-            by.setdefault(code, []).append([d, tm, cat, title, pdf, x[8] if len(x) > 8 else None])
+            by.setdefault(code, []).append([d, tm, cat, title, pdf, extra])
+    if all_dir:
+        os.makedirs(all_dir, exist_ok=True)
+        for code, v in every.items():
+            v.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            with open(os.path.join(all_dir, f"{code}.json"), "w", encoding="utf-8") as f:
+                json.dump({"base": BASE, "items": v}, f, ensure_ascii=False, separators=(",", ":"))
+        print(f"{len(every)}銘柄の開示（全部）を {all_dir} に書き出しました")
     for v in by.values():
         v.sort(key=lambda x: (x[0], x[1]), reverse=True)
     with open(out, "w", encoding="utf-8") as f:
@@ -247,10 +360,11 @@ def main():
     ap.add_argument("--days", type=int, default=3)
     ap.add_argument("--export")
     ap.add_argument("--since-days", type=int, default=45)
+    ap.add_argument("--all-dir", help="銘柄ごとの全部の開示（IR）の書き出し先")
     ap.add_argument("--refresh", action="store_true", help="取得済みの日も取り直す（業績修正の数字の後付け用）")
     args = ap.parse_args()
     if args.export:
-        export(args.repo, args.export, args.since_days)
+        export(args.repo, args.export, args.since_days, args.all_dir)
     else:
         collect(args.repo, args.days, args.refresh)
 
