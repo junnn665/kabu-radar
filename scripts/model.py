@@ -173,7 +173,88 @@ def add_us_links(f, ut):
     return f
 
 
-def build_frame(history, universe, market, us=None):
+# ---------------- 決算（J-Quants の決算サマリー）----------------
+def _num(x):
+    try:
+        v = float(x)
+        return v if math.isfinite(v) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def fins_table(fins_dir):
+    """決算サマリーを銘柄ごとの「いつから分かったか」付きの表にする（未来の情報を使わないため）。
+    15:30（大引け）より前の開示はその日の終値から、15:30以降の開示は翌営業日から使える"""
+    import glob
+    rows = []
+    for path in glob.glob(os.path.join(fins_dir, "*.json")):
+        rows += load(path, {}).get("items", [])
+    if not rows:
+        return None, None
+    df = pd.DataFrame(rows)
+    df["code"] = df["Code"].astype(str).str[:4]
+    df["ts"] = pd.to_datetime(df["DiscDate"] + " " + df["DiscTime"].fillna("00:00:00").replace("", "00:00:00"), errors="coerce")
+    for c in ("Sales", "OP", "OdP", "NP", "EPS", "BPS", "FSales", "FOP", "FOdP", "FEPS", "NxFOP", "NxFEPS", "FDivAnn", "NxFDivAnn"):
+        df[c] = pd.to_numeric(df[c], errors="coerce") if c in df else np.nan
+    df = df.dropna(subset=["ts"]).sort_values(["code", "ts"])
+    df["profit"] = df["OP"].where(df["OP"].notna(), df["OdP"])
+    df["fprofit"] = df["FOP"].where(df["FOP"].notna(), df["FOdP"])
+    q = df["CurPerType"].map({"1Q": 1, "2Q": 2, "3Q": 3, "4Q": 4, "FY": 4}).astype("float")
+    df["q"] = q
+    # 前年同期（同じ銘柄・同じ四半期・期末日がおよそ1年前）
+    df["per_en"] = pd.to_datetime(df["CurPerEn"], errors="coerce")
+    res = df[df["profit"].notna() & df["per_en"].notna()][["code", "CurPerType", "per_en", "profit", "Sales"]].copy()
+    res["per_en_next"] = res["per_en"] + pd.DateOffset(years=1)
+    prev = res.rename(columns={"profit": "profit_prev", "Sales": "sales_prev"}).drop(columns=["per_en"])
+    df = df.merge(prev.drop_duplicates(["code", "CurPerType", "per_en_next"], keep="last"),
+                  left_on=["code", "CurPerType", "per_en"], right_on=["code", "CurPerType", "per_en_next"], how="left")
+    yoy = lambda a, b: ((a - b) / b.abs()).where(b.abs() > 0).clip(-3, 3)  # noqa: E731
+    df["fn_profit_yoy"] = yoy(df["profit"], df["profit_prev"])
+    df["fn_sales_yoy"] = yoy(df["Sales"], df["sales_prev"])
+    # 通期予想に対する進捗（四半期のみ）
+    df["fn_progress"] = ((df["profit"] / df["fprofit"]) - df["q"] * 0.25).where((df["fprofit"] > 0) & (df["q"] < 4)).clip(-1, 1)
+    # 会社予想の修正：同じ決算期の、前回の予想と比べて
+    df["fy"] = df["CurFYEn"]
+    df["fprofit_prev"] = df.groupby(["code", "fy"])["fprofit"].transform(lambda x: x.ffill().shift(1))
+    df["fn_fc_rev"] = yoy(df["fprofit"], df["fprofit_prev"])
+    # 割安度の材料（株価で割るのは後で）：予想EPS（本決算なら来期予想）、1株純資産、予想配当
+    df["feps"] = df["FEPS"].where(df["q"] < 4, df["NxFEPS"]).where(lambda x: x.notna(), df["FEPS"])
+    df["fdiv"] = df["FDivAnn"].where(df["q"] < 4, df["NxFDivAnn"]).where(lambda x: x.notna(), df["FDivAnn"])
+    df["bps"] = df.groupby("code")["BPS"].transform(lambda x: x.ffill())
+    # 進捗は同じ決算期の中だけで引き継ぐ（本決算の後は空に）
+    df["fn_progress"] = df.groupby(["code", "fy"])["fn_progress"].transform(lambda x: x.ffill())
+    df.loc[df["q"] == 4, "fn_progress"] = np.nan
+    keep = ["code", "ts", "fn_profit_yoy", "fn_sales_yoy", "fn_progress", "fn_fc_rev", "feps", "fdiv", "bps"]
+    out = df[keep].copy()
+    # 項目ごとに「その時点で最新の値」を使う（予想修正の開示には実績が無い等）
+    for c in ("fn_profit_yoy", "fn_sales_yoy", "feps", "fdiv", "bps"):
+        out[c] = out.groupby("code")[c].transform(lambda x: x.ffill())
+    last = str(df["DiscDate"].max())
+    return {c: g.drop(columns=["code"]).reset_index(drop=True) for c, g in out.groupby("code")}, last
+
+
+def add_fins(f, ft, close):
+    """銘柄の日足（f の index＝日付）に、その時点で分かっている最新の決算情報を付ける"""
+    row_ts = pd.to_datetime(pd.Series(f.index)) + pd.Timedelta(hours=15, minutes=30)
+    cols = ["fn_profit_yoy", "fn_sales_yoy", "fn_progress", "fn_fc_rev", "fn_ep", "fn_bp", "fn_dy", "fn_days"]
+    if ft is None or not len(ft):
+        for c in cols:
+            f[c] = np.nan
+        return f
+    m = pd.merge_asof(pd.DataFrame({"rts": row_ts}), ft.sort_values("ts"), left_on="rts", right_on="ts", direction="backward", allow_exact_matches=False)
+    for c in ("fn_profit_yoy", "fn_sales_yoy", "fn_progress", "fn_fc_rev", "feps", "bps", "fdiv"):
+        m[c] = pd.to_numeric(m[c], errors="coerce")
+    for c in ("fn_profit_yoy", "fn_sales_yoy", "fn_progress", "fn_fc_rev"):
+        f[c] = m[c].to_numpy(dtype="float64")
+    c = close.to_numpy()
+    f["fn_ep"] = (m["feps"].to_numpy() / c).clip(-1, 1)
+    f["fn_bp"] = (m["bps"].to_numpy() / c).clip(0, 10)
+    f["fn_dy"] = (m["fdiv"].to_numpy() / c).clip(0, 0.3)
+    f["fn_days"] = np.log1p((m["rts"] - m["ts"]).dt.days.to_numpy())
+    return f
+
+
+def build_frame(history, universe, market, us=None, fins=None):
     segs = {"P": 0, "S": 1, "G": 2}
     meta = {u["sym"]: u for u in universe}
     sectors = sorted({u.get("sector") for u in universe if u.get("sector")})
@@ -187,6 +268,8 @@ def build_frame(history, universe, market, us=None):
         f, fwd, turn, fwd_o = stock_features(b)
         if ut is not None:
             f = add_us_links(f, ut)
+        if fins is not None:
+            f = add_fins(f, fins.get(sym), pd.Series(b["c"], index=f.index, dtype="float64"))
         f["fwd"] = fwd.values
         f["fwd_o"] = fwd_o.values
         f["turn"] = turn.values
@@ -238,13 +321,18 @@ VARIANTS = {
     "B_rank": {"target": "market", "drop": list(MARKET_COLS), "opts": {"rank_label": True}},
     "C_rank": {"target": "market", "drop": list(MARKET_COLS) + ["sector"], "opts": {"rank_label": True}},
     "R_reversal5": {"target": "market", "drop": [], "opts": {"rule": ("ret5", -1)}},
+    # 2026-10-30 追加：決算の数字（利益・売上の前年比、通期予想への進捗、会社予想の修正、予想PER/PBR/配当利回り、発表からの日数）
+    "B_rank_fins": {"target": "market", "drop": list(MARKET_COLS), "opts": {"rank_label": True}, "fins": True},
+    "C_rank_fins": {"target": "market", "drop": list(MARKET_COLS) + ["sector"], "opts": {"rank_label": True}, "fins": True},
+    "F_value_only": {"target": "market", "drop": list(MARKET_COLS), "opts": {"rank_label": True}, "fins": True, "only": ["fn_ep", "fn_bp", "fn_dy", "seg", "sector", "lturn"]},
     "R_momentum60": {"target": "market", "drop": [], "opts": {"rule": ("ret60", 1)}},
 }
 EXP_SETS = {"base": ["A_all", "B_no_market", "C_no_market_sector", "D_sector_neutral"],
             "us": ["B_no_market", "B_us_prev", "B_open", "B_open_us"],
             "sector": ["B_no_market", "C_no_market_sector", "D_sector_neutral"],
             "adapt": ["B_no_market", "B_w250", "B_w120", "B_weekly", "B_decay60", "B_rank", "C_rank", "R_reversal5"],
-            "rank": ["B_no_market", "B_rank", "C_rank"]}
+            "rank": ["B_no_market", "B_rank", "C_rank"],
+            "fins": ["B_rank", "B_rank_fins", "C_rank_fins"]}
 DEFAULT_VARIANT = os.environ.get("MODEL_VARIANT") or "B_rank"  # 2026-10-28 の比較で、1週間・1か月とも B_no_market より成績・安定性が上（順位で学ぶ）
 
 
@@ -266,6 +354,10 @@ def add_target(df):
 def feature_cols(df, variant=None):
     v = variant or VARIANTS[DEFAULT_VARIANT]
     drop, pre = set(v["drop"]), tuple(v.get("drop_prefix", NO_US))
+    if v.get("only"):
+        return [c for c in v["only"] if c in df.columns]
+    if not v.get("fins"):  # 決算の入力は、使う設計だけ
+        pre = pre + ("fn_",)
     return [c for c in df.columns if c not in FEATURES_EXCLUDE and c not in drop and not (pre and c.startswith(pre))]
 
 
@@ -383,6 +475,7 @@ def main():
     ap.add_argument("--experiment", action="store_true", help="複数の設計を同じ期間で比較して結果を出力")
     ap.add_argument("--horizon", type=int, default=5, help="何営業日後を予測するか（5＝1週間、20＝1か月）")
     ap.add_argument("--tag", default="", help="出力ファイル名に付ける印（例: 20 → predictions_20.json）")
+    ap.add_argument("--fins", help="J-Quants の決算サマリー（fins ブランチ）のフォルダ")
     args = ap.parse_args()
     global H
     H = args.horizon
@@ -396,6 +489,10 @@ def main():
     # 米国の入力は、使う設計（比較のとき・本番の設計が米国を使うとき）だけ読み込む（日中の予測を遅くしないため）
     need_us = args.experiment or tuple(VARIANTS[DEFAULT_VARIANT].get("drop_prefix", NO_US)) != NO_US
     us = load(os.path.join(os.path.dirname(args.market), "us.json"), {}) if need_us else {}
+    need_fins = args.fins and (args.experiment or VARIANTS[DEFAULT_VARIANT].get("fins"))
+    fins, fins_end = fins_table(args.fins) if need_fins else (None, None)
+    if fins:
+        print(f"決算サマリー {len(fins):,}銘柄（〜{fins_end}）", flush=True)
     model_path = os.path.join(args.cache, f"model{suf}.txt")
     meta_path = os.path.join(args.cache, f"model_meta{suf}.json")
     predict_only = not args.train and not args.experiment and os.path.exists(model_path) \
@@ -403,14 +500,19 @@ def main():
     full_history = history
     if predict_only:  # 予測だけなら直近300営業日あれば足りる（52週高値などの計算に250日使う）
         history = {s: {k: v[-300:] for k, v in b.items()} for s, b in history.items()}
-    df, sectors = build_frame(history, universe, market, us)
+    df, sectors = build_frame(history, universe, market, us, fins)
     df = add_target(df)
     if args.experiment:
         res = {}
+        exp_df = df
+        if fins_end and os.environ.get("EXP_SET") == "fins":
+            # 決算データがある期間（無料プランは直近12週間なし）だけで、全部の設計を同じ条件で比べる
+            exp_df = df[df["date"] <= fins_end]
+            print(f"比較は {exp_df['date'].min()}〜{fins_end} の範囲で行います", flush=True)
         for name in EXP_SETS.get(os.environ.get("EXP_SET", "base"), EXP_SETS["base"]):
             v = VARIANTS[name]
             t1 = time.time()
-            r = evaluate(df, feature_cols(df, v), label_col(v), quiet=True, ev=eval_cols(v), opts=v.get("opts"))
+            r = evaluate(exp_df, feature_cols(exp_df, v), label_col(v), quiet=True, ev=eval_cols(v), opts=v.get("opts"))
             res[name] = {k: r[k] for k in ("ic", "icPositiveDays", "top2pct", "bottom2pct", "sectorConcentration", "positiveMonths", "top2pctSectorNeutral", "top2Risk", "recent", "monthlyTop2pct")} | {"top20": r["top"][1]}
             sn, rk = r["top2pctSectorNeutral"], r["top2Risk"]
             print(f"EXP {name}: IC {r['ic']:.3f} top2% {r['top2pct']['excess'] * 100:+.2f}% win {r['top2pct']['win'] * 100:.0f}% "
@@ -431,7 +533,7 @@ def main():
         else:
             print("特徴量が変わったので学習し直します")
     if model is None and predict_only:  # 学び直しには全期間が要るので作り直す
-        df, sectors = build_frame(full_history, universe, market, us)
+        df, sectors = build_frame(full_history, universe, market, us, fins)
         df = add_target(df)
         cols = feature_cols(df, variant)
     if model is None:

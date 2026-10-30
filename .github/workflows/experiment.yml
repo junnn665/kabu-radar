@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       exp_set:
-        description: '比較する設計の組（base / us / sector / adapt）'
+        description: '比較する設計の組（base / us / sector / adapt / rank / fins）'
         default: 'adapt'
       horizon:
         description: '何営業日後（5 or 20）'
@@ -44,9 +44,10 @@ jobs:
           git fetch -q --depth 1 origin data && git show origin/data:universe.json > exp/raw/universe.json
           python -c "import gzip,json;d=json.load(gzip.open('cache/history.json.gz','rt'));json.dump(d['bars'],open('exp/raw/history.json','w'));print(len(d['bars']),'銘柄')"
           echo '{}' > exp/raw/market.json
+          git fetch -q --depth 1 origin fins 2>/dev/null && mkdir -p exp/fins && git archive origin/fins | tar -x -C exp/fins || true
           set +e
           python -W ignore scripts/model.py --history exp/raw/history.json --universe exp/raw/universe.json --market exp/raw/market.json \
-            --cache exp/cache --out exp/raw --train --no-eval --experiment --horizon ${{ inputs.horizon }} > exp.log 2>&1
+            --cache exp/cache --out exp/raw --train --no-eval --experiment --horizon ${{ inputs.horizon }} --fins exp/fins > exp.log 2>&1
           code=$?
           (grep "^EXP " exp.log || true) | while read -r line; do echo "::notice title=比較（${{ inputs.horizon }}日）::$line"; done
           if [ $code -ne 0 ]; then echo "::error title=失敗（$code）::$(tail -c 1500 exp.log | tr '\n' '|')"; free -m | tr '\n' '|'; fi
