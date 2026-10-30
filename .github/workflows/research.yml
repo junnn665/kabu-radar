@@ -17,6 +17,14 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
+      - name: 日足キャッシュと適時開示（調査で使う場合）
+        uses: actions/cache/restore@v5
+        with:
+          path: cache
+          key: hist-none
+          restore-keys: hist-
+      - name: 適時開示の取り出し
+        run: git fetch -q --depth 1 origin tdnet && mkdir -p tdnet && git archive origin/tdnet | tar -x -C tdnet || true
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
