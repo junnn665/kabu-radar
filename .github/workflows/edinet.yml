@@ -1,0 +1,59 @@
+name: EDINET 決算の取得（過去分）
+
+# 有価証券報告書・四半期報告書・半期報告書の主要な数字（2019年〜J-Quantsの前まで）を edinet ブランチに貯める。
+# 1回5時間ほどで区切り、残りがあれば自分をもう一度起動して続ける（全部で1〜2日）
+on:
+  workflow_dispatch:
+    inputs:
+      probe:
+        description: '数件だけ取って中身を確認する'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: kabu-radar-edinet
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 345
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: 取得
+        env:
+          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git clone -q --depth 1 -b edinet "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" edinet 2>/dev/null \
+            || (mkdir edinet && cd edinet && git init -q -b edinet)
+          if [ "${{ inputs.probe }}" = "true" ]; then
+            python scripts/edinet_fins.py --repo edinet --probe 2>&1 | tee ed.log
+            grep "^PROBE" ed.log | while read -r l; do echo "::notice title=EDINET::${l:0:3500}"; done
+            exit 0
+          fi
+          # 対象：売買代金1億円以上の銘柄（AIの学習・検証に使うのはこの銘柄だけ）
+          git fetch -q --depth 1 origin data && git show origin/data:screener.json | python -c "import json,sys;[print(r['sym']) for r in json.load(sys.stdin)['rows'] if r.get('liquid')]" > codes.txt
+          wc -l codes.txt
+          python -u scripts/edinet_fins.py --repo edinet --start 2019-01-01 --end 2024-10-29 --codes codes.txt --max-minutes 300 2>&1 | tee ed.log
+          echo "::notice title=EDINET::$(grep -v '^CONTINUE' ed.log | tail -n 1)"
+          grep -q "^CONTINUE" ed.log && echo "more=yes" >> "$GITHUB_ENV" || true
+      - name: 保存
+        if: ${{ !inputs.probe }}
+        run: |
+          cd edinet
+          git add -A
+          git -c user.name="kabu-radar-bot" -c user.email="actions@users.noreply.github.com" commit -qm "edinet $(date -u +%FT%TZ)" || exit 0
+          git push -q "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:edinet
+      - name: 残りがあれば続きを起動
+        if: ${{ !inputs.probe && env.more == 'yes' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X POST repos/${{ github.repository }}/actions/workflows/edinet.yml/dispatches -f ref=main
