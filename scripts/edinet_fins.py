@@ -120,6 +120,17 @@ def parse_csv_zip(b):
                             got[k + "_prev"] = p
                         break
             if got.get("np") is not None or got.get("ord") is not None or got.get("op") is not None:
+                # 配当は個別（親会社）の数字として載っていることが多い
+                if "dps" not in got:
+                    for el in ITEMS["dps"]:
+                        for sfx in ("_NonConsolidatedMember", ""):
+                            if (el, cur + sfx) in vals:
+                                got["dps"] = vals[(el, cur + sfx)]
+                                if (el, prev + sfx) in vals:
+                                    got["dps_prev"] = vals[(el, prev + sfx)]
+                                break
+                        if "dps" in got:
+                            break
                 out = {"cons": cons, "per": cur, **got}
                 for el in ITEMS["bps"]:
                     for inst in ("CurrentYearInstant", "CurrentQuarterInstant", "InterimInstant"):
