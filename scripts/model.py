@@ -210,7 +210,27 @@ def tdnet_rows(tdnet_dir, after):
     return rows
 
 
-def fins_table(fins_dir, tdnet_dir=None):
+def edinet_rows(edinet_dir, before):
+    """EDINET（有報・四半期・半期報告書）の数字を、J-Quants より前の期間の行にする（予想は無いので実績だけ）"""
+    import glob
+    rows = []
+    for path in glob.glob(os.path.join(edinet_dir, "data", "*.json")):
+        for x in load(path, {}).values():
+            sub = (x.get("submit") or "").strip()
+            if not sub or sub[:10] >= before or not (x.get("op") is not None or x.get("ord") is not None or x.get("np") is not None):
+                continue
+            prof, prev = (x.get("op"), x.get("op_prev")) if x.get("op") is not None else (x.get("ord"), x.get("ord_prev"))
+            yoy = lambda a, b: None if a is None or b in (None, 0) else (a - b) / abs(b)  # noqa: E731
+            fy = x.get("type") == "FY"
+            rows.append({"DiscDate": sub[:10], "DiscTime": (sub[11:16] or "15:30") + ":00", "Code": x["code"], "src": "edinet",
+                         "CurPerType": "FY" if fy else "", "CurPerEn": x.get("periodEnd") or "", "Sales": x.get("sales"),
+                         "OP": x.get("op"), "OdP": x.get("ord"), "NP": x.get("np"), "BPS": x.get("bps"),
+                         "EPS": x.get("eps") if fy else None, "DivAnn": x.get("dps") if fy else None,
+                         "_yoy_profit": yoy(prof, prev), "_yoy_sales": yoy(x.get("sales"), x.get("sales_prev"))})
+    return rows
+
+
+def fins_table(fins_dir, tdnet_dir=None, edinet_dir=None):
     """決算サマリーを銘柄ごとの「いつから分かったか」付きの表にする（未来の情報を使わないため）。
     15:30（大引け）より前の開示はその日の終値から、15:30以降の開示は翌営業日から使える"""
     import glob
@@ -220,8 +240,11 @@ def fins_table(fins_dir, tdnet_dir=None):
     if not rows:
         return None, None
     jq_end = max(r.get("DiscDate", "") for r in rows)
+    jq_start = min(r.get("DiscDate", "") for r in rows)
     if tdnet_dir:
         rows += tdnet_rows(tdnet_dir, jq_end)
+    if edinet_dir:
+        rows += edinet_rows(edinet_dir, jq_start)
     df = pd.DataFrame(rows)
     for c in ("CurPerEn", "CurFYEn", "src", "_yoy_profit", "_yoy_sales", "_fc_rev", "NxFOdP"):
         if c not in df:
@@ -230,7 +253,7 @@ def fins_table(fins_dir, tdnet_dir=None):
     df["CurFYEn"] = df["CurFYEn"].fillna("")
     df["code"] = df["Code"].astype(str).str[:4]
     df["ts"] = pd.to_datetime(df["DiscDate"] + " " + df["DiscTime"].fillna("00:00:00").replace("", "00:00:00"), errors="coerce")
-    for c in ("Sales", "OP", "OdP", "NP", "EPS", "BPS", "FSales", "FOP", "FOdP", "FEPS", "NxFOP", "NxFEPS", "FDivAnn", "NxFDivAnn"):
+    for c in ("Sales", "OP", "OdP", "NP", "EPS", "BPS", "DivAnn", "FSales", "FOP", "FOdP", "FEPS", "NxFOP", "NxFEPS", "FDivAnn", "NxFDivAnn"):
         df[c] = pd.to_numeric(df[c], errors="coerce") if c in df else np.nan
     df = df.dropna(subset=["ts"]).sort_values(["code", "ts"])
     df["profit"] = df["OP"].where(df["OP"].notna(), df["OdP"])
@@ -261,10 +284,13 @@ def fins_table(fins_dir, tdnet_dir=None):
     # 進捗は同じ決算期の中だけで引き継ぐ（本決算の後は空に）
     df["fn_progress"] = df.groupby(["code", "fy"])["fn_progress"].transform(lambda x: x.ffill())
     df.loc[df["q"] == 4, "fn_progress"] = np.nan
-    keep = ["code", "ts", "fn_profit_yoy", "fn_sales_yoy", "fn_progress", "fn_fc_rev", "feps", "fdiv", "bps"]
+    # 実績ベース（本決算のEPS・配当）：EDINET の期間でも使える割安度の材料
+    df["eps_fy"] = df["EPS"].where(df["CurPerType"] == "FY")
+    df["dps_fy"] = df["DivAnn"].where(df["CurPerType"] == "FY")
+    keep = ["code", "ts", "fn_profit_yoy", "fn_sales_yoy", "fn_progress", "fn_fc_rev", "feps", "fdiv", "bps", "eps_fy", "dps_fy"]
     out = df[keep].copy()
     # 項目ごとに「その時点で最新の値」を使う（予想修正の開示には実績が無い等）
-    for c in ("fn_profit_yoy", "fn_sales_yoy", "feps", "fdiv", "bps"):
+    for c in ("fn_profit_yoy", "fn_sales_yoy", "feps", "fdiv", "bps", "eps_fy", "dps_fy"):
         out[c] = out.groupby("code")[c].transform(lambda x: x.ffill())
     last = jq_end
     return {c: g.drop(columns=["code"]).reset_index(drop=True) for c, g in out.groupby("code")}, last
@@ -273,13 +299,15 @@ def fins_table(fins_dir, tdnet_dir=None):
 def add_fins(f, ft, close):
     """銘柄の日足（f の index＝日付）に、その時点で分かっている最新の決算情報を付ける"""
     row_ts = pd.to_datetime(pd.Series(f.index)) + pd.Timedelta(hours=15, minutes=30)
-    cols = ["fn_profit_yoy", "fn_sales_yoy", "fn_progress", "fn_fc_rev", "fn_ep", "fn_bp", "fn_dy", "fn_days"]
+    cols = ["fn_profit_yoy", "fn_sales_yoy", "fn_progress", "fn_fc_rev", "fn_ep", "fn_bp", "fn_dy", "fn_days", "ft_ep", "ft_dy"]
     if ft is None or not len(ft):
         for c in cols:
             f[c] = np.nan
         return f
     m = pd.merge_asof(pd.DataFrame({"rts": row_ts}), ft.sort_values("ts"), left_on="rts", right_on="ts", direction="backward", allow_exact_matches=False)
-    for c in ("fn_profit_yoy", "fn_sales_yoy", "fn_progress", "fn_fc_rev", "feps", "bps", "fdiv"):
+    for c in ("fn_profit_yoy", "fn_sales_yoy", "fn_progress", "fn_fc_rev", "feps", "bps", "fdiv", "eps_fy", "dps_fy"):
+        if c not in m:
+            m[c] = np.nan
         m[c] = pd.to_numeric(m[c], errors="coerce")
     for c in ("fn_profit_yoy", "fn_sales_yoy", "fn_progress", "fn_fc_rev"):
         f[c] = m[c].to_numpy(dtype="float64")
@@ -288,6 +316,8 @@ def add_fins(f, ft, close):
     f["fn_bp"] = (m["bps"].to_numpy() / c).clip(0, 10)
     f["fn_dy"] = (m["fdiv"].to_numpy() / c).clip(0, 0.3)
     f["fn_days"] = np.log1p((m["rts"] - m["ts"]).dt.days.to_numpy())
+    f["ft_ep"] = (m["eps_fy"].to_numpy() / c).clip(-1, 1)   # 実績PERの割安度（直近の本決算）
+    f["ft_dy"] = (m["dps_fy"].to_numpy() / c).clip(0, 0.3)  # 実績配当利回り
     return f
 
 
@@ -361,6 +391,11 @@ VARIANTS = {
     # 2026-10-30 追加：決算の数字（利益・売上の前年比、通期予想への進捗、会社予想の修正、予想PER/PBR/配当利回り、発表からの日数）
     "B_rank_fins": {"target": "market", "drop": list(MARKET_COLS), "opts": {"rank_label": True}, "fins": True},
     "C_rank_fins": {"target": "market", "drop": list(MARKET_COLS) + ["sector"], "opts": {"rank_label": True}, "fins": True},
+    # 2026-10-31 追加：EDINET で2019年からの決算を足し、長い期間で学ぶ（window＝学習に使う営業日数、test_days＝検証する長さ）
+    "B_rank_fins_tr": {"target": "market", "drop": list(MARKET_COLS), "opts": {"rank_label": True}, "fins": True, "trailing": True},
+    "B_rank_fins_long": {"target": "market", "drop": list(MARKET_COLS), "opts": {"rank_label": True, "window": 1250}, "fins": True, "trailing": True},
+    "B_rank_fins_wide": {"target": "market", "drop": list(MARKET_COLS), "opts": {"rank_label": True, "test_days": 1000}, "fins": True},
+    "B_rank_fins_long_wide": {"target": "market", "drop": list(MARKET_COLS), "opts": {"rank_label": True, "window": 1250, "test_days": 1000}, "fins": True, "trailing": True},
     "F_value_only": {"target": "market", "drop": list(MARKET_COLS), "opts": {"rank_label": True}, "fins": True, "only": ["fn_ep", "fn_bp", "fn_dy", "seg", "sector", "lturn"]},
     "R_momentum60": {"target": "market", "drop": [], "opts": {"rule": ("ret60", 1)}},
 }
@@ -369,7 +404,8 @@ EXP_SETS = {"base": ["A_all", "B_no_market", "C_no_market_sector", "D_sector_neu
             "sector": ["B_no_market", "C_no_market_sector", "D_sector_neutral"],
             "adapt": ["B_no_market", "B_w250", "B_w120", "B_weekly", "B_decay60", "B_rank", "C_rank", "R_reversal5"],
             "rank": ["B_no_market", "B_rank", "C_rank"],
-            "fins": ["B_rank", "B_rank_fins", "C_rank_fins"]}
+            "fins": ["B_rank", "B_rank_fins", "C_rank_fins"],
+            "long": ["B_rank_fins", "B_rank_fins_tr", "B_rank_fins_long", "B_rank_fins_wide", "B_rank_fins_long_wide"]}
 DEFAULT_VARIANT = os.environ.get("MODEL_VARIANT") or "B_rank_fins"  # 2026-10-31：決算の数字を加えた設計が、1週間・1か月とも B_rank より上（比較は2026-08まで）
 
 
@@ -394,7 +430,9 @@ def feature_cols(df, variant=None):
     if v.get("only"):
         return [c for c in v["only"] if c in df.columns]
     if not v.get("fins"):  # 決算の入力は、使う設計だけ
-        pre = pre + ("fn_",)
+        pre = pre + ("fn_", "ft_")
+    elif not v.get("trailing"):
+        pre = pre + ("ft_",)
     return [c for c in df.columns if c not in FEATURES_EXCLUDE and c not in drop and not (pre and c.startswith(pre))]
 
 
@@ -432,7 +470,7 @@ def evaluate(df, cols, label="ex", quiet=False, ev=("ex", "fwd"), opts=None):
     if label == ev[0]:
         label = "ex"
     n_days = len(dates)
-    test_start = max(MIN_TRAIN_DAYS + H + 1, n_days - H - TEST_DAYS)
+    test_start = max(MIN_TRAIN_DAYS + H + 1, n_days - H - (opts or {}).get("test_days", TEST_DAYS))
     preds = []
     o = opts or {}
     block, window = o.get("block", TEST_BLOCK), o.get("window", TRAIN_WINDOW)
@@ -514,6 +552,7 @@ def main():
     ap.add_argument("--tag", default="", help="出力ファイル名に付ける印（例: 20 → predictions_20.json）")
     ap.add_argument("--fins", help="J-Quants の決算サマリー（fins ブランチ）のフォルダ")
     ap.add_argument("--tdnet", help="TDnet の開示（tdnet ブランチ）のフォルダ。J-Quants に無い直近の分を補う")
+    ap.add_argument("--edinet", help="EDINET の決算（edinet ブランチ）のフォルダ。J-Quants より前の分を補う")
     args = ap.parse_args()
     global H
     H = args.horizon
@@ -528,7 +567,7 @@ def main():
     need_us = args.experiment or tuple(VARIANTS[DEFAULT_VARIANT].get("drop_prefix", NO_US)) != NO_US
     us = load(os.path.join(os.path.dirname(args.market), "us.json"), {}) if need_us else {}
     need_fins = args.fins and (args.experiment or VARIANTS[DEFAULT_VARIANT].get("fins"))
-    fins, fins_end = fins_table(args.fins, args.tdnet) if need_fins else (None, None)
+    fins, fins_end = fins_table(args.fins, args.tdnet, args.edinet) if need_fins else (None, None)
     if fins:
         print(f"決算サマリー {len(fins):,}銘柄（〜{fins_end}）", flush=True)
     model_path = os.path.join(args.cache, f"model{suf}.txt")
@@ -543,7 +582,7 @@ def main():
     if args.experiment:
         res = {}
         exp_df = df
-        if fins_end and os.environ.get("EXP_SET") == "fins":
+        if fins_end and os.environ.get("EXP_SET") in ("fins", "long"):
             # 決算データがある期間（無料プランは直近12週間なし）だけで、全部の設計を同じ条件で比べる
             exp_df = df[df["date"] <= fins_end]
             print(f"比較は {exp_df['date'].min()}〜{fins_end} の範囲で行います", flush=True)

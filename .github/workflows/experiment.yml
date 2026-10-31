@@ -5,11 +5,15 @@ on:
   workflow_dispatch:
     inputs:
       exp_set:
-        description: '比較する設計の組（base / us / sector / adapt / rank / fins）'
+        description: '比較する設計の組（base / us / sector / adapt / rank / fins / long）'
         default: 'adapt'
       horizon:
         description: '何営業日後（5 or 20）'
         default: '5'
+      long:
+        description: '8年分の日足とEDINETの決算で比べる（exp_set=long のとき）'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -42,12 +46,21 @@ jobs:
           pip install --quiet -r requirements.txt 2>&1 | tail -3
           mkdir -p exp/raw exp/cache
           git fetch -q --depth 1 origin data && git show origin/data:universe.json > exp/raw/universe.json
-          python -c "import gzip,json;d=json.load(gzip.open('cache/history.json.gz','rt'));json.dump(d['bars'],open('exp/raw/history.json','w'));print(len(d['bars']),'銘柄')"
+          EXTRA=""
+          if [ "${{ inputs.long }}" = "true" ]; then
+            git show origin/data:screener.json | python -c "import json,sys;[print(r['sym']) for r in json.load(sys.stdin)['rows'] if r.get('liquid')]" > codes.txt
+            python scripts/fetch_long_history.py --codes codes.txt --years 8 --out exp/raw/history.json
+            git fetch -q --depth 1 origin edinet 2>/dev/null && mkdir -p exp/edinet && git archive origin/edinet | tar -x -C exp/edinet || true
+            EXTRA="--edinet exp/edinet"
+          else
+            python -c "import gzip,json;d=json.load(gzip.open('cache/history.json.gz','rt'));json.dump(d['bars'],open('exp/raw/history.json','w'));print(len(d['bars']),'銘柄')"
+          fi
           echo '{}' > exp/raw/market.json
           git fetch -q --depth 1 origin fins 2>/dev/null && mkdir -p exp/fins && git archive origin/fins | tar -x -C exp/fins || true
+          git fetch -q --depth 1 origin tdnet 2>/dev/null && mkdir -p exp/tdnet && git archive origin/tdnet | tar -x -C exp/tdnet || true
           set +e
           python -W ignore scripts/model.py --history exp/raw/history.json --universe exp/raw/universe.json --market exp/raw/market.json \
-            --cache exp/cache --out exp/raw --train --no-eval --experiment --horizon ${{ inputs.horizon }} --fins exp/fins > exp.log 2>&1
+            --cache exp/cache --out exp/raw --train --no-eval --experiment --horizon ${{ inputs.horizon }} --fins exp/fins --tdnet exp/tdnet $EXTRA > exp.log 2>&1
           code=$?
           (grep "^EXP " exp.log || true) | while read -r line; do echo "::notice title=比較（${{ inputs.horizon }}日）::$line"; done
           if [ $code -ne 0 ]; then echo "::error title=失敗（$code）::$(tail -c 1500 exp.log | tr '\n' '|')"; free -m | tr '\n' '|'; fi
