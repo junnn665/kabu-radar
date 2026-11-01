@@ -143,6 +143,20 @@ def parse_csv_zip(b):
     return out
 
 
+def checkpoint(repo, push):
+    """途中経過を edinet ブランチに保存（途中で止まっても失わないように）"""
+    if not push:
+        return
+    import subprocess
+    run = lambda *a: subprocess.run(["git", "-C", repo, *a], capture_output=True, text=True)  # noqa: E731
+    run("add", "-A")
+    if run("diff", "--cached", "--quiet").returncode == 0:
+        return
+    run("-c", "user.name=kabu-radar-bot", "-c", "user.email=actions@users.noreply.github.com", "commit", "-qm", "edinet checkpoint")
+    r = run("push", "-q", push, "HEAD:edinet")
+    print(f"  途中保存 {'OK' if r.returncode == 0 else 'NG ' + r.stderr[:200]}", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", default="edinet")
@@ -151,6 +165,7 @@ def main():
     ap.add_argument("--codes", help="対象の銘柄コード（1行に1つ）。省略すると全部")
     ap.add_argument("--max-minutes", type=float, default=320)
     ap.add_argument("--probe", action="store_true")
+    ap.add_argument("--push", help="途中保存する push 先（git の URL）")
     args = ap.parse_args()
     key = os.environ.get("EDINET_API_KEY", "").strip()
     if not key:
@@ -199,6 +214,8 @@ def main():
                                         for x in js.get("results", []) if x.get("docTypeCode") in DOC_TYPES and x.get("secCode") and x.get("csvFlag") == "1"]
                 save(path, lists)
                 n_list += 1
+                if n_list % 150 == 0:
+                    checkpoint(args.repo, args.push)
             time.sleep(INTERVAL)
         d -= dt.timedelta(days=1)
     # 2) 書類ごとの数字（新しい順）
@@ -233,6 +250,8 @@ def main():
             for y, dd in done_cache.items():
                 save(os.path.join(args.repo, "data", f"{y}.json"), dd)
             print(f"  {n_doc}件（読み取れた {n_ok}件・{elapsed():.0f}分）", flush=True)
+            if n_doc % 600 == 0:
+                checkpoint(args.repo, args.push)
         time.sleep(INTERVAL)
     for y, dd in done_cache.items():
         save(os.path.join(args.repo, "data", f"{y}.json"), dd)
