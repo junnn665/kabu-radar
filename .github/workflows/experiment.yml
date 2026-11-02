@@ -25,7 +25,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 330
     steps:
       - uses: actions/checkout@v5
       - name: 日足キャッシュを読む（書き戻さない）

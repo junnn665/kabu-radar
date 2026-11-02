@@ -394,8 +394,8 @@ VARIANTS = {
     # 2026-10-31 追加：EDINET で2019年からの決算を足し、長い期間で学ぶ（window＝学習に使う営業日数、test_days＝検証する長さ）
     "B_rank_fins_tr": {"target": "market", "drop": list(MARKET_COLS), "opts": {"rank_label": True}, "fins": True, "trailing": True},
     "B_rank_fins_long": {"target": "market", "drop": list(MARKET_COLS), "opts": {"rank_label": True, "window": 1250}, "fins": True, "trailing": True},
-    "B_rank_fins_wide": {"target": "market", "drop": list(MARKET_COLS), "opts": {"rank_label": True, "test_days": 1000}, "fins": True},
-    "B_rank_fins_long_wide": {"target": "market", "drop": list(MARKET_COLS), "opts": {"rank_label": True, "window": 1250, "test_days": 1000}, "fins": True, "trailing": True},
+    "B_rank_fins_wide": {"target": "market", "drop": list(MARKET_COLS), "opts": {"rank_label": True, "test_days": 1000, "block": 40}, "fins": True},
+    "B_rank_fins_long_wide": {"target": "market", "drop": list(MARKET_COLS), "opts": {"rank_label": True, "window": 1250, "test_days": 1000, "block": 40}, "fins": True, "trailing": True},
     "F_value_only": {"target": "market", "drop": list(MARKET_COLS), "opts": {"rank_label": True}, "fins": True, "only": ["fn_ep", "fn_bp", "fn_dy", "seg", "sector", "lturn"]},
     "R_momentum60": {"target": "market", "drop": [], "opts": {"rule": ("ret60", 1)}},
 }
