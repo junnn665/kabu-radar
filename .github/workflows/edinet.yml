@@ -9,8 +9,6 @@ on:
         description: '数件だけ取って中身を確認する'
         type: boolean
         default: false
-  schedule:
-    - cron: '17 */6 * * *'   # 途中で止まったときの再開用（全部取り終わっていれば数秒で終わる）
 
 permissions:
   contents: write
