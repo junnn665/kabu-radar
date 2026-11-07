@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       exp_set:
-        description: '比較する設計の組（base / us / sector / adapt / rank / fins / long）'
+        description: '比較する設計の組（base / us / sector / adapt / rank / fins / long / blend）'
         default: 'adapt'
       horizon:
         description: '何営業日後（5 or 20）'
@@ -16,7 +16,7 @@ on:
         default: false
 
 permissions:
-  contents: read
+  contents: write  # 比較結果を experiments ブランチに保存（サイトの成績タブに出す）
 
 concurrency:
   group: kabu-radar-experiment
@@ -40,6 +40,7 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
       - name: 比較
+        id: exp
         env:
           EXP_SET: ${{ inputs.exp_set }}
         run: |
@@ -56,6 +57,13 @@ jobs:
             python -c "import gzip,json;d=json.load(gzip.open('cache/history.json.gz','rt'));json.dump(d['bars'],open('exp/raw/history.json','w'));print(len(d['bars']),'銘柄')"
           fi
           echo '{}' > exp/raw/market.json
+          # ドル円（新しい入力「ドル円への感応度」用。取れなければ空のまま）
+          python - <<'PY' || echo '{}' > exp/raw/us.json
+          import json, yfinance as yf
+          s = yf.download("JPY=X", period="10y", interval="1d", auto_adjust=True, progress=False)["Close"].squeeze().dropna()
+          json.dump({"USDJPY": {"d": [d.strftime("%Y-%m-%d") for d in s.index], "c": [float(x) for x in s.values]}}, open("exp/raw/us.json", "w"))
+          print("USDJPY", len(s))
+          PY
           git fetch -q --depth 1 origin fins 2>/dev/null && mkdir -p exp/fins && git archive origin/fins | tar -x -C exp/fins || true
           git fetch -q --depth 1 origin tdnet 2>/dev/null && mkdir -p exp/tdnet && git archive origin/tdnet | tar -x -C exp/tdnet || true
           set +e
@@ -64,4 +72,22 @@ jobs:
           code=$?
           (grep "^EXP " exp.log || true) | while read -r line; do echo "::notice title=比較（${{ inputs.horizon }}日）::$line"; done
           if [ $code -ne 0 ]; then echo "::error title=失敗（$code）::$(tail -c 1500 exp.log | tr '\n' '|')"; free -m | tr '\n' '|'; fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
           exit 0
+      - name: 結果を experiments ブランチに保存
+        if: steps.exp.outputs.code == '0'
+        run: |
+          git clone -q --depth 1 -b experiments "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" expb 2>/dev/null \
+            || (mkdir expb && cd expb && git init -q -b experiments)
+          name="${{ inputs.exp_set }}_${{ inputs.horizon }}${{ inputs.long && '_long' || '' }}"
+          python - "$name" <<'PY'
+          import json, sys, datetime, glob
+          name = sys.argv[1]
+          res = json.load(open(glob.glob("exp/raw/experiments*.json")[0]))
+          doc = {"set": name, "runAt": datetime.datetime.utcnow().isoformat() + "Z", "results": res}
+          json.dump(doc, open(f"expb/{name}.json", "w"), ensure_ascii=False)
+          PY
+          cd expb
+          git add -A
+          git -c user.name="kabu-radar-bot" -c user.email="actions@users.noreply.github.com" commit -qm "experiment $name" || exit 0
+          git push -q "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:experiments

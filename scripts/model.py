@@ -28,7 +28,9 @@ TRAIN_WINDOW = 500       # 学習に使う過去の営業日数（約2年）
 TEST_DAYS = 250          # 検証する期間（直近約1年）
 MIN_TRAIN_DAYS = int(os.environ.get("MODEL_MIN_TRAIN_DAYS", 120))
 MIN_ROWS = int(os.environ.get("MODEL_MIN_ROWS", 5000))
-PICK_N, PICK_PER_SECTOR = 5, 2  # 本番のAIピック：1日5銘柄、同じ業種は2銘柄まで（js/app.js の aiPicks・js/aitrack.js と同じ）
+COST_RT = 0.002          # 売買コストの目安（往復）：手数料0円の証券会社でも、買値と売値の差・約定のずれで約0.2%
+PICK_N, PICK_PER_SECTOR = 5, 2
+RANK_BINS = [(0.99, 1.0), (0.98, 0.99), (0.95, 0.98), (0.9, 0.95), (0.8, 0.9), (0.6, 0.8), (0.4, 0.6), (0.2, 0.4), (0.1, 0.2), (0.05, 0.1), (0.0, 0.05)]  # 本番のAIピック：1日5銘柄、同じ業種は2銘柄まで（js/app.js の aiPicks・js/aitrack.js と同じ）
 JST = dt.timezone(dt.timedelta(hours=9))
 PARAMS = dict(objective="huber", alpha=0.05, learning_rate=0.04, num_leaves=31, min_data_in_leaf=400,
               feature_fraction=0.8, bagging_fraction=0.7, bagging_freq=1, lambda_l2=10.0, verbose=-1, seed=7,
@@ -322,6 +324,41 @@ def add_fins(f, ft, close):
     return f
 
 
+def _roll_beta(df, y, x, n=120):
+    """銘柄ごとに、過去 n 日の y の x に対する感応度（β）"""
+    t = pd.DataFrame({"sym": df["sym"].values, "xy": (y * x).values, "x": x.values, "y": y.values, "xx": (x * x).values}, index=df.index)
+    m = t.groupby("sym", sort=False)[["xy", "x", "y", "xx"]].transform(lambda s: s.rolling(n, min_periods=n // 2).mean())
+    var = (m["xx"] - m["x"] ** 2).replace(0, np.nan)
+    return ((m["xy"] - m["x"] * m["y"]) / var).clip(-5, 5)
+
+
+def add_extra(df, us=None):
+    """2026-11 追加の入力（x_ で始まる。使う設計だけが使う）
+    x_sec_ret5/20：同じ業種の平均の値動き（業種の勢い）、x_rel_ret20：業種平均との差（業種の中での強さ）
+    x_beta_mkt：市場平均（売買代金1億円以上の全銘柄平均）への感応度、x_beta_fx：ドル円への感応度、x_fx_link：その×ドル円の直近5日"""
+    liq = df["turn"] >= MIN_TURNOVER
+    r1, r5, r20 = df["ret1"], df["ret5"], df["ret20"]
+    mkt1 = df["date"].map(r1[liq].groupby(df.loc[liq, "date"]).mean())
+    key = [df["date"], df["sector"]]
+    for col, r in (("x_sec_ret5", r5), ("x_sec_ret20", r20)):
+        df[col] = r.where(liq).groupby(key).transform("mean")
+    df["x_rel_ret20"] = r20 - df["x_sec_ret20"]
+    df["x_beta_mkt"] = _roll_beta(df, r1, mkt1)
+    fx = (us or {}).get("USDJPY")
+    if fx and fx.get("d"):
+        sr = pd.Series(fx["c"], index=fx["d"], dtype="float64")
+        sr = np.log(sr[~sr.index.duplicated(keep="last")].sort_index())
+        dates = pd.Index(sorted(df["date"].unique()))
+        lvl = sr.reindex(sr.index.union(dates)).ffill().reindex(dates)
+        fx1, fx5 = df["date"].map(lvl.diff()), df["date"].map(lvl.diff(5))
+        df["x_beta_fx"] = _roll_beta(df, r1, fx1)
+        df["x_fx_link"] = df["x_beta_fx"] * fx5
+    else:
+        df["x_beta_fx"] = np.nan
+        df["x_fx_link"] = np.nan
+    return df
+
+
 def build_frame(history, universe, market, us=None, fins=None):
     segs = {"P": 0, "S": 1, "G": 2}
     meta = {u["sym"]: u for u in universe}
@@ -347,6 +384,7 @@ def build_frame(history, universe, market, us=None, fins=None):
         f["sector"] = sec_id.get(u.get("sector"), -1)
         parts.append(f.reset_index())
     df = pd.concat(parts, ignore_index=True)
+    df = add_extra(df, us)
     mf = market_features(market)
     if len(mf):
         # 指数は同じ日付（無ければ直近の値）で合わせる。米国指数・VIXは前日の値を使う
@@ -399,6 +437,12 @@ VARIANTS = {
     "B_rank_fins_long_wide": {"target": "market", "drop": list(MARKET_COLS), "opts": {"rank_label": True, "window": 1250, "test_days": 1000, "block": 40}, "fins": True, "trailing": True},
     "F_value_only": {"target": "market", "drop": list(MARKET_COLS), "opts": {"rank_label": True}, "fins": True, "only": ["fn_ep", "fn_bp", "fn_dy", "seg", "sector", "lturn"]},
     "R_momentum60": {"target": "market", "drop": [], "opts": {"rule": ("ret60", 1)}},
+    # 2026-11 追加：業種の当たり外れへの賭けを減らす（予測から同じ日・同じ業種の平均予測を sector_shrink の割合だけ引く）
+    "B_rank_fins_sn50": {"target": "market", "drop": list(MARKET_COLS), "opts": {"rank_label": True, "sector_shrink": 0.5}, "fins": True},
+    "B_rank_fins_sn100": {"target": "market", "drop": list(MARKET_COLS), "opts": {"rank_label": True, "sector_shrink": 1.0}, "fins": True},
+    # 2026-11 追加：新しい入力（業種の勢い・業種の中での強さ・市場とドル円への感応度）
+    "B_rank_fins_x": {"target": "market", "drop": list(MARKET_COLS), "opts": {"rank_label": True}, "fins": True, "extra": True},
+    "B_rank_fins_x_sn50": {"target": "market", "drop": list(MARKET_COLS), "opts": {"rank_label": True, "sector_shrink": 0.5}, "fins": True, "extra": True},
 }
 EXP_SETS = {"base": ["A_all", "B_no_market", "C_no_market_sector", "D_sector_neutral"],
             "us": ["B_no_market", "B_us_prev", "B_open", "B_open_us"],
@@ -406,7 +450,8 @@ EXP_SETS = {"base": ["A_all", "B_no_market", "C_no_market_sector", "D_sector_neu
             "adapt": ["B_no_market", "B_w250", "B_w120", "B_weekly", "B_decay60", "B_rank", "C_rank", "R_reversal5"],
             "rank": ["B_no_market", "B_rank", "C_rank"],
             "fins": ["B_rank", "B_rank_fins", "C_rank_fins"],
-            "long": ["B_rank_fins", "B_rank_fins_tr", "B_rank_fins_long", "B_rank_fins_wide", "B_rank_fins_long_wide"]}
+            "long": ["B_rank_fins", "B_rank_fins_tr", "B_rank_fins_long", "B_rank_fins_wide", "B_rank_fins_long_wide"],
+            "blend": ["B_rank_fins", "B_rank_fins_sn50", "B_rank_fins_sn100", "B_rank_fins_x", "B_rank_fins_x_sn50"]}
 DEFAULT_VARIANT = os.environ.get("MODEL_VARIANT") or "B_rank_fins"  # 2026-10-31：決算の数字を加えた設計が、1週間・1か月とも B_rank より上（比較は2026-08まで）
 
 
@@ -430,6 +475,8 @@ def feature_cols(df, variant=None):
     drop, pre = set(v["drop"]), tuple(v.get("drop_prefix", NO_US))
     if v.get("only"):
         return [c for c in v["only"] if c in df.columns]
+    if not v.get("extra"):  # 2026-11 追加の入力（業種の勢い・市場/ドル円への感応度）は、使う設計だけ
+        pre = pre + ("x_",)
     if not v.get("fins"):  # 決算の入力は、使う設計だけ
         pre = pre + ("fn_", "ft_")
     elif not v.get("trailing"):
@@ -489,12 +536,15 @@ def evaluate(df, cols, label="ex", quiet=False, ev=("ex", "fwd"), opts=None):
         else:
             pr = train(tr, cols, label, o.get("half_life"), o.get("rank_label")).predict(te[cols])
         preds.append(pd.DataFrame({"date": te["date"].values, "sym": te["sym"].values, "pred": pr, "ex": te["ex"].values,
-                                   "fwd": te["fwd"].values, "sector": te["sector"].values}))
+                                   "fwd": te["fwd"].values, "sector": te["sector"].values,
+                                   "exo": te["ex_o"].values if "ex_o" in te else np.nan}))
         if not quiet:
             print(f"  検証ブロック {test_dates[0]}〜{test_dates[-1]}: 学習 {len(tr):,}件 → 予測 {len(te):,}件", flush=True)
     if not preds:
         return None
     p = pd.concat(preds, ignore_index=True)
+    if o.get("sector_shrink"):
+        p["pred"] = p["pred"] - o["sector_shrink"] * p.groupby(["date", "sector"])["pred"].transform("mean")
     p["rank"] = p.groupby("date")["pred"].rank(pct=True)
     p["decile"] = np.minimum((p["rank"] * 10).astype(int), 9)
     dec = p.groupby("decile").agg(excess=("ex", "mean"), win=("ex", lambda x: float((x > 0).mean())), n=("ex", "size")).reset_index()
@@ -539,7 +589,14 @@ def evaluate(df, cols, label="ex", quiet=False, ev=("ex", "fwd"), opts=None):
                   "worstDay5pct": float(daily_pk.quantile(0.05)), "negDays": float((daily_pk < 0).mean()),
                   "positiveMonths": float((monthly_pk > 0).mean()), "monthly": {k: float(v) for k, v in monthly_pk.items()},
                   "recent3m": float(picks.loc[picks["date"] >= all_days[-63], "ex"].mean()),
-                  "recent1m": float(picks.loc[picks["date"] >= all_days[-21], "ex"].mean())},
+                  "recent1m": float(picks.loc[picks["date"] >= all_days[-21], "ex"].mean()),
+                  # 売買コスト（往復 COST_RT）を引いた成績と、翌朝の寄り付きで買った場合の成績
+                  "cost": COST_RT, "excessNet": float(picks["ex"].mean() - COST_RT), "avgNet": float(picks["fwd"].mean() - COST_RT),
+                  "winNet": float((picks["fwd"] > COST_RT).mean()),
+                  "excessOpen": float(picks["exo"].mean()) if picks["exo"].notna().any() else None},
+        # 予測の強さ（順位）ごとの過去の成績：銘柄詳細で「この強さの予測は過去に勝率◯%」と出す
+        "rankBins": [{"lo": lo, "hi": hi, "n": int(len(b)), "excess": float(b["ex"].mean()), "win": float((b["fwd"] > 0).mean()), "exWin": float((b["ex"] > 0).mean())}
+                     for lo, hi in RANK_BINS for b in [p[(p["rank"] > lo) & (p["rank"] <= hi)]] if len(b)],
         # 予測の値 → 市場平均との差（%）への換算（順位で学ぶ設計は予測が「順位の点数」なので、検証結果から換算の傾きを求める）
         "calib": {"slope": float(np.polyfit(p["pred"].to_numpy(), p["ex"].to_numpy(), 1)[0])},
         "recent": {  # 直近の成績（相場の流れが変わったときに強いか）
@@ -577,7 +634,7 @@ def main():
     universe = load(args.universe, {}).get("symbols", [])
     market = load(args.market, {})
     # 米国の入力は、使う設計（比較のとき・本番の設計が米国を使うとき）だけ読み込む（日中の予測を遅くしないため）
-    need_us = args.experiment or tuple(VARIANTS[DEFAULT_VARIANT].get("drop_prefix", NO_US)) != NO_US
+    need_us = args.experiment or tuple(VARIANTS[DEFAULT_VARIANT].get("drop_prefix", NO_US)) != NO_US or VARIANTS[DEFAULT_VARIANT].get("extra")
     us = load(os.path.join(os.path.dirname(args.market), "us.json"), {}) if need_us else {}
     need_fins = args.fins and (args.experiment or VARIANTS[DEFAULT_VARIANT].get("fins"))
     fins, fins_end = fins_table(args.fins, args.tdnet, args.edinet) if need_fins else (None, None)
@@ -651,6 +708,11 @@ def main():
     last = df.sort_values("date").groupby("sym", observed=True).tail(1)
     last = last[last["date"] >= sorted(df["date"].unique())[-3]]  # 取引停止などで古い銘柄は除く
     pred = model.predict(last[cols])
+    shrink = (variant.get("opts") or {}).get("sector_shrink")
+    if shrink:  # 業種の平均予測を引く（検証と同じ。売買代金のある銘柄の業種平均）
+        lm = last["liquid"].to_numpy()
+        sec_mean = pd.Series(pred[lm]).groupby(last.loc[lm, "sector"].to_numpy()).mean()
+        pred = pred - shrink * last["sector"].map(sec_mean).fillna(0).to_numpy()
     # 中央寄せ：学習は外れ値に強い方法（huber）なので、予測は「平均」でなく「中央値」寄りになり、株価の上がり方の偏りのぶん
     # ほとんどの銘柄がマイナスに出てしまう。売買代金のある銘柄の平均を 0 にそろえて「平均的な銘柄と比べて上か下か」にする（順位は変わらない）
     liq_mask = last["liquid"].to_numpy()
