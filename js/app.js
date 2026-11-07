@@ -8,7 +8,7 @@ import { levels, holdingLevels } from './levels.js';
 import { marketOf } from './market.js';
 import { computeReview } from './review.js';
 import { decodeCsv, parseCsvText, extractHoldings } from './csvimport.js';
-import { dividendPlan, concentration, upcoming, TAX } from './portfolio.js';
+import { dividendPlan, concentration, upcoming, TAX, correlations } from './portfolio.js';
 import { squarify } from './treemap.js';
 import { selectPicks, EARNINGS_SKIP_DAYS } from './picks.js';
 import { COST_RT } from './aitrack.js';
@@ -34,6 +34,8 @@ const DEFAULTS = {
   method: 'auto',      // 判定方式：'auto'（検証成績が良い方）| 'ai'（AI予測）| 'points'（シグナル点数）
   horizon: 5,          // AI予測の期間：5（1週間）| 20（1か月）
   memos: {},           // 売買メモ { sym: [{ date, text, price, p5, p20 }] }
+  money: { capital: 0, risk: 0.01 }, // 資金管理：運用資金（0＝買う量の目安を出さない）と、1回の取引で失ってよい割合
+  notif: { hold: true, holdRank: true, earnings: true, picks: false, alerts: true }, // ブラウザ通知の種類
   v: 4,
 };
 const store = {
@@ -174,7 +176,7 @@ const nameOf = (s) => state.universe?.get(s)?.name || state.quotes[s]?.name || s
 
 async function loadServer() {
   if (!state.provider.static) { state.server = {}; return; }
-  const files = ['screener', 'backtest', 'paper', 'paper_ai', 'news', 'ai', 'meta', 'market', 'review', 'model', 'model20', 'ai_reasons', 'ai_track', 'ai_track20', 'dividends', 'tdnet'];
+  const files = ['screener', 'backtest', 'paper', 'paper_ai', 'news', 'ai', 'meta', 'market', 'review', 'model', 'model20', 'ai_reasons', 'ai_track', 'ai_track20', 'sector_flow', 'experiments', 'dividends', 'tdnet'];
   if (!state.universe) {
     try {
       const u = await state.provider.json('universe.json', { fresh: true });
@@ -376,9 +378,10 @@ async function restart() {
 }
 
 // ================= 通知 =================
+const notifOn = (k) => state.settings.notif?.[k] ?? true;
 function checkAlerts(s, q, old) {
   const al = state.settings.alerts[s];
-  if (!al || !old) return;
+  if (!al || !old || !notifOn('alerts')) return;
   if (al.above && old.price < al.above && q.price >= al.above) notify(`${nameOf(s)} が ${fmt(al.above)} を上抜け`, `現在値 ${fmt(q.price)}`);
   if (al.below && old.price > al.below && q.price <= al.below) notify(`${nameOf(s)} が ${fmt(al.below)} を下抜け`, `現在値 ${fmt(q.price)}`);
 }
@@ -391,7 +394,9 @@ function daysUntil(d) {
 function checkEventsToday() {
   const key = `kr:eventsNotified:${todayJst()}`;
   if (store.get(key)) return;
-  const soon = state.settings.watchlist.flatMap((s) => eventBadges(s).filter((b) => b.days <= 3).map((b) => `${nameOf(s)} ${b.text}`));
+  if (!notifOn('earnings')) return;
+  const syms = [...new Set([...state.settings.watchlist, ...state.settings.holdings.map((h) => h.sym)])];
+  const soon = syms.flatMap((s) => eventBadges(s).filter((b) => b.days <= 3).map((b) => `${nameOf(s)} ${b.text}`));
   if (soon.length) notify('決算・権利落ちが近い銘柄', soon.join(' / '));
   store.set(key, true);
 }
@@ -502,6 +507,21 @@ function levelLine(s, compact = false) {
   const lv = levels(state.candles[s]);
   if (!lv) return '';
   return `<div class="lv ${compact ? 'compact' : ''}"><span>損切り <b class="mono">${fmt(lv.stop)}</b><i class="down">${pctf(lv.stopPct)}</i></span><span>利確 <b class="mono">${fmt(lv.target)}</b><i class="up">${pctf(lv.targetPct)}</i></span></div>`;
+}
+
+// 買う量の目安：損切りラインまで下がったときの損失が「運用資金 × 1回に失ってよい割合」に収まる株数（100株単位）。
+// 1銘柄に資金の25%を超えては入れない
+function sizeLine(s) {
+  const m = state.settings.money || {};
+  const lv = levels(state.candles[s]);
+  const price = state.quotes[s]?.price ?? state.candles[s]?.at(-1)?.close;
+  if (!m.capital || !lv || !price || lv.stop >= price) return m.capital ? '' : '<small class="muted">設定で運用資金を入れると、買う量の目安が出ます。</small>';
+  const byRisk = (m.capital * m.risk) / (price - lv.stop);
+  const byCap = (m.capital * 0.25) / price;
+  const lots = Math.floor(Math.min(byRisk, byCap) / 100);
+  const shares = lots * 100;
+  if (!lots) return `<div class="size"><span>買う量の目安</span><b>100株でも上限を超えます</b><small class="muted">100株 = ¥${Math.round(price * 100).toLocaleString('ja-JP')}・損切りまでの損失 ¥${Math.round((price - lv.stop) * 100).toLocaleString('ja-JP')}（上限 ¥${Math.round(m.capital * m.risk).toLocaleString('ja-JP')}）</small></div>`;
+  return `<div class="size"><span>買う量の目安</span><b class="mono">${shares.toLocaleString()}株</b><small class="muted">¥${Math.round(shares * price).toLocaleString('ja-JP')}・損切りまで下がると −¥${Math.round(shares * (price - lv.stop)).toLocaleString('ja-JP')}（資金の${(m.risk * 100).toFixed(1)}%まで${byCap < byRisk ? '・1銘柄は資金の25%まで' : ''}）</small></div>`;
 }
 
 function fundaLine(s) {
@@ -819,12 +839,13 @@ function renderDetail() {
       <small>AI予測（市場平均との差・売買代金のある銘柄の中での順位）</small>
       <div class="hgrid">${hcell(x.p5, x.r5, '1週間先（5営業日）', mr)}${hcell(x.p20, x.r20, '1か月先（20営業日）', mr20, !!h20Weak())}</div>
       ${x.r5 == null && x.p5 != null ? '<small class="muted">売買代金が少ないため順位の対象外です</small>' : ''}
+      ${rankTrend(s)}
       ${reasonsHtml(s)}
       ${mr?.from ? `<small class="muted">過去成績は学習に使っていない期間（${mr.from}〜）での結果です。</small>` : ''}
     </div>` : '';
   $('#d-score').innerHTML = a ? `シグナル点数 <b class="mono">${a.score}</b> ・ <span class="badge ${a.verdict.key}">${a.verdict.label}</span>${useAI() && a.ai ? '<small class="muted pen">判定はAI予測の順位で表示中（設定で変更）</small>' : ''}`
     + (a.penalty ? `<small class="muted pen">地合いで −${a.penalty}点（元 ${a.rawScore}点）</small>` : '') : '';
-  $('#d-levels').innerHTML = levelLine(s) + fundaLine(s)
+  $('#d-levels').innerHTML = levelLine(s) + sizeLine(s) + fundaLine(s)
     + (levels(state.candles[s]) ? `<small class="muted">損切りは普段の値幅(ATR)の2倍下、利確は3倍上の目安です。</small>` : '');
 
   // 「なぜ今？」解説：自分のキーで生成 ＞ Actions で自動生成（無料AI/Claude） ＞ ルールによる自動まとめ
@@ -1095,10 +1116,24 @@ function renderHoldings() {
         <div><button class="mini ghost" data-del-hold="${esc(h.id)}">削除</button></div></td>
     </tr>`).join('')
     : '<tr><td colspan="6" class="muted">まだ登録がありません。上のフォームか「CSVから取り込む」で登録してください。</td></tr>';
+  $('#hold-sum').insertAdjacentHTML('beforeend', switchHtml(list));
   renderMix(list);
   renderDividends(list);
   renderCalendar();
   renderAllMemos();
+}
+
+// 乗り換え候補：AIの1か月先（無ければ1週間先）の予測が下位30%の保有株と、今日のAIピックのうち持っていない銘柄
+function switchHtml(list) {
+  if (!state.server.model?.report) return '';
+  const weak = list.filter((h) => { const r = h.ai?.r20 ?? h.ai?.r5; return r != null && r <= 0.3; });
+  if (!weak.length) return '';
+  const held = new Set(list.map((h) => h.sym));
+  const cands = aiPicks(8).filter((r) => !held.has(r.sym)).slice(0, 3);
+  return `<div class="switch"><h3>入れ替えの候補 <small class="muted">AIの予測ベース・参考</small></h3>
+    <p class="small">予測が弱い保有株：${weak.map((h) => `<b>${esc(nameOf(h.sym))}</b>（${h.ai.r20 != null ? '1か月先' : '1週間先'} 下位${Math.round((h.ai.r20 ?? h.ai.r5) * 100)}%）`).join('、')}</p>
+    ${cands.length ? `<p class="small">代わりの候補（今日のAIピック）：${cands.map((r) => `<a href="#" data-scr="${esc(r.sym)}">${esc(r.name)}</a>`).join('、')}</p>` : ''}
+    <small class="muted">売ると税金がかかる場合があります。予測が弱いだけで、売る理由にはなりません。決算や自分の買った理由も見て判断してください。</small></div>`;
 }
 
 const sectorOf = (s) => rowOf(s)?.sector || state.universe?.get(s)?.sector || null;
@@ -1120,7 +1155,19 @@ function renderMix(list) {
       <div><h3>業種別</h3>${c.sectors.map((x) => `<div class="mixrow"><span>${esc(x.name)}</span>${bar(x.w, x.w > 0.4 ? 'hot' : '')}<span class="mono">${Math.round(x.w * 100)}%</span></div>`).join('')}</div>
       <div><h3>銘柄別</h3>${c.stocks.map((x) => `<div class="mixrow"><span>${esc(nameOf(x.sym))}</span>${bar(x.w, x.w > 0.3 && c.stocks.length > 1 ? 'hot' : '')}<span class="mono">${Math.round(x.w * 100)}%</span></div>`).join('')}</div>
     </div>
-    <p class="muted small">実質的な分散銘柄数 <b class="mono">${c.effectiveN.toFixed(1)}</b>（全部同じ金額なら銘柄数と同じ。少ないほど一部の銘柄に偏っています）</p>`;
+    <p class="muted small">実質的な分散銘柄数 <b class="mono">${c.effectiveN.toFixed(1)}</b>（全部同じ金額なら銘柄数と同じ。少ないほど一部の銘柄に偏っています）</p>
+    ${corrHtml(list)}`;
+}
+
+// 値動きの似かた（直近60営業日の相関）。業種が違っても同じように動く組は、分散になっていない
+function corrHtml(list) {
+  const syms = [...new Set(list.map((h) => h.sym))];
+  if (syms.length < 2) return '';
+  const cr = correlations(Object.fromEntries(syms.map((s) => [s, state.candles[s]])));
+  if (cr.avg == null) return '';
+  return `<h3>値動きの似かた <small class="muted">直近60営業日</small></h3>
+    <p class="small">保有株どうしの平均の相関 <b class="mono">${cr.avg.toFixed(2)}</b>${cr.avg >= 0.5 ? '：全体に同じ方向へ動きやすく、下げる時はまとめて下げます' : cr.avg >= 0.3 ? '：ふつう' : '：よく分散できています'}</p>
+    ${cr.high.length ? `<p class="warn">ほぼ同じ動きの組（相関0.7以上）：${cr.high.slice(0, 6).map((p) => `${esc(nameOf(p.a))} と ${esc(nameOf(p.b))}（${p.r.toFixed(2)}）`).join('、')}。片方を別の動きをする銘柄に替えると、下げに強くなります。</p>` : ''}`;
 }
 
 // 配当金の見込み：過去12か月の1株配当 × 株数
@@ -1202,6 +1249,9 @@ async function importCsv(file) {
 // 保有株の警告は1日1回だけ通知
 function checkHoldings() {
   const day = todayJst();
+  checkRankDrops(day);
+  checkPicksChange(day);
+  if (!notifOn('hold')) return;
   const sent = store.get('kr:holdNotified') || {};
   if (sent.day !== day) { sent.day = day; sent.keys = []; }
   for (const h of state.settings.holdings.map(holdingView)) {
@@ -1215,9 +1265,53 @@ function checkHoldings() {
   store.set('kr:holdNotified', sent);
 }
 
+// 保有株のAIの順位が、前の日より大きく下がったら（上位半分 → 下位20%）お知らせ（1日1回・銘柄ごと）
+function checkRankDrops(day) {
+  if (!notifOn('holdRank')) return;
+  const memo = store.get('kr:rankMemo') || { day: null, prev: {}, cur: {}, sent: [] };
+  if (memo.day !== day) { memo.prev = { ...memo.prev, ...memo.cur }; memo.cur = {}; memo.sent = []; memo.day = day; }
+  for (const h of state.settings.holdings) {
+    const r = rowOf(h.sym)?.aiRank;
+    if (r == null) continue;
+    memo.cur[h.sym] = r;
+    const p = memo.prev[h.sym];
+    if (p != null && p >= 0.5 && r <= 0.2 && !memo.sent.includes(h.sym)) {
+      memo.sent.push(h.sym);
+      notify(`保有株: ${nameOf(h.sym)}`, `AIの順位が急に下がりました（上位${Math.round((1 - p) * 100)}% → 下位${Math.round(r * 100)}%）`);
+    }
+  }
+  store.set('kr:rankMemo', memo);
+}
+
+// 今日のAIピックが入れ替わったら（朝の更新で）お知らせ
+function checkPicksChange(day) {
+  if (!notifOn('picks') || !useAI()) return;
+  const now = aiPicks(5).map((r) => r.sym);
+  if (!now.length) return;
+  const memo = store.get('kr:picksMemo') || {};
+  const key = now.join(',');
+  if (memo.key === key) return;
+  const added = now.filter((s) => !(memo.syms || []).includes(s));
+  if (memo.key && added.length && memo.day !== day) notify('今日のAIピック', `新しく入った銘柄：${added.map(nameOf).join('・')}`);
+  store.set('kr:picksMemo', { key, syms: now, day: memo.key ? day : null });
+}
+
 // ---------- 答え合わせ ----------
 function aiTrackSection() {
-  return trackBlock(state.server.ai_track, '1週間先') + trackBlock(state.server.ai_track20, '1か月先', true) + '<h3>シグナル点数「強い買い」の答え合わせ</h3>';
+  return sectorFlowHtml() + trackBlock(state.server.ai_track, '1週間先') + trackBlock(state.server.ai_track20, '1か月先', true) + '<h3>シグナル点数「強い買い」の答え合わせ</h3>';
+}
+
+// 業種の流れ：AIの予測の上位5%に、どの業種が何割入っているか（直近10営業日）。1つの業種が半分を超えたら注意
+function sectorFlowHtml() {
+  const f = state.server.sector_flow?.w1;
+  if (!f?.dates?.length || !f.sectors?.length) return '';
+  const n = Math.min(10, f.dates.length), ds = f.dates.slice(-n);
+  const cell = (v) => `<td class="num mono sf" style="--a:${Math.min(1, v * 1.6).toFixed(2)}">${v >= 0.05 ? Math.round(v * 100) : ''}</td>`;
+  const top = f.sectors[0], now = top.share.at(-1);
+  return `<h3>AIが注目している業種の流れ <small class="muted">予測の上位5%に占める割合（%）</small></h3>
+    ${now >= 0.5 ? `<p class="warn">いまは上位の${Math.round(now * 100)}%が「${esc(top.name)}」です。この業種がまとめて逆に動くと、予測もまとめて外れます。</p>` : ''}
+    <div class="table-wrap"><table class="sflow"><thead><tr><th>業種</th>${ds.map((d) => `<th class="num">${+d.slice(5, 7)}/${+d.slice(8, 10)}</th>`).join('')}</tr></thead>
+    <tbody>${f.sectors.map((x) => `<tr><td>${esc(x.name)}</td>${x.share.slice(-n).map(cell).join('')}</tr>`).join('')}</tbody></table></div>`;
 }
 
 // 健全度グラフ：日ごとのAIピックの市場平均との差（濃い棒＝確定、薄い棒＝途中経過）。止める基準の線も引く
@@ -1337,10 +1431,21 @@ function confidence(rank, rep) {
   return `<small class="conf">この強さ（${band}）の予測は過去に 値上がり${Math.round(b.win * 100)}%・市場平均に勝った${Math.round(b.exWin * 100)}%（平均${pctf(b.excess, 1)}・${b.n.toLocaleString()}回）</small>`;
 }
 
+// AIの順位の推移（直近60営業日・上ほど上位）
+function rankTrend(s) {
+  const h = state.provider?.aiHist?.[s];
+  if (!h || (h.w1?.length || 0) + (h.m1?.length || 0) < 4) return '';
+  const line = (pts, label) => (pts?.length >= 2 ? `<div class="rtrend"><small>${label}</small>${sparkline(pts.map((p) => p[1] * 100), 140, 30)}<small class="mono">上位${Math.round((1 - pts.at(-1)[1]) * 100)}%<span class="muted">（${pts.length}日前 上位${Math.round((1 - pts[0][1]) * 100)}%）</span></small></div>` : '');
+  return `<div class="rtrends"><small class="muted">AIの順位の推移</small>${line(h.w1, '1週間先')}${line(h.m1, '1か月先')}</div>`;
+}
+
 function reasonsHtml(s) {
   const rs = state.server.ai_reasons?.reasons?.[s];
   if (!rs?.length) return '';
-  return `<div class="reasons"><small class="muted">AIの判断理由（予測を押し上げ／押し下げた要因）</small>
+  const name = ([k, , v]) => `${FEATURE_JA[k] || k}${reasonValue(k, v) ? `（${reasonValue(k, v)}）` : ''}`;
+  const ups = rs.filter((r) => r[1] > 0), downs = rs.filter((r) => r[1] < 0);
+  const sentence = `${ups.length ? `${ups.map(name).join('と')}が予測を押し上げています。` : ''}${downs.length ? `一方で${downs.map(name).join('と')}は押し下げ要因です。` : ''}`;
+  return `<div class="reasons"><p class="small">${esc(sentence)}</p><small class="muted">AIの判断理由（予測を押し上げ／押し下げた要因）</small>
     ${rs.map(([k, c, v]) => `<div class="rs ${c >= 0 ? 'pos' : 'neg'}"><b class="mono">${c >= 0 ? '+' : ''}${c.toFixed(2)}%</b><span>${esc(FEATURE_JA[k] || k)}${reasonValue(k, v) ? `：${esc(reasonValue(k, v))}` : ''}</span></div>`).join('')}</div>`;
 }
 
@@ -1632,6 +1737,9 @@ function openSettings() {
   $('#s-aimodel').value = st.aiModel;
   $('#s-aikey').value = st.aiKey;
   $('#s-mfilter').checked = st.marketFilter;
+  $('#s-capital').value = st.money?.capital || '';
+  $('#s-risk').value = ((st.money?.risk ?? 0.01) * 100).toString();
+  document.querySelectorAll('[data-notif]').forEach((i) => { i.checked = st.notif?.[i.dataset.notif] ?? true; });
   renderWeightInputs();
   dlg.showModal();
 }
@@ -1652,6 +1760,8 @@ $('#s-save').addEventListener('click', (e) => {
     aiKey: $('#s-aikey').value.trim(),
     aiModel: $('#s-aimodel').value,
     marketFilter: $('#s-mfilter').checked,
+    money: { capital: Math.max(0, +$('#s-capital').value || 0), risk: Math.min(0.05, Math.max(0.001, (+$('#s-risk').value || 1) / 100)) },
+    notif: Object.fromEntries([...document.querySelectorAll('[data-notif]')].map((i) => [i.dataset.notif, i.checked])),
   });
   if (st.weightMode === 'custom') st.custom = custom;
   store.save(st);

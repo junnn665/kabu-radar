@@ -153,3 +153,18 @@ test('AIピックの選び方：決算前・もう一方の期間が下半分は
   assert.equal(selectPicks(rows, { today: '2026-11-07', stress: { n: 3 } }).length, 3);
   assert.equal(selectPicks(rows, { today: '2026-11-07', stress: { n: 0 } }).length, 0);
 });
+
+test('値動きの似かた・AIの順位の推移・業種の流れ', async () => {
+  const { correlations } = await import('../js/portfolio.js');
+  const { rankHistory, sectorFlow } = await import('../js/aitrack.js');
+  const mk = (f) => Array.from({ length: 70 }, (_, i) => ({ date: `d${String(i).padStart(3, '0')}`, close: f(i) }));
+  const a = mk((i) => 100 + Math.sin(i) * 5 + i * 0.1), b = mk((i) => 200 + Math.sin(i) * 10 + i * 0.2), c = mk((i) => 100 + Math.cos(i * 1.7) * 5);
+  const cr = correlations({ A: a, B: b, C: c });
+  assert.equal(cr.high.length, 1);
+  assert.deepEqual([cr.high[0].a, cr.high[0].b], ['A', 'B']);
+  const log = { days: { '2026-11-01': { A: 3, B: 1, C: 2 }, '2026-11-02': { A: 1, B: 3, C: 2 } } };
+  const rh = rankHistory(log);
+  assert.deepEqual(rh.A, [['2026-11-01', 1], ['2026-11-02', 0.333]]);
+  const sf = sectorFlow(log, { A: 'bank', B: 'it', C: 'it' }, { topPct: 0.34 });
+  assert.deepEqual(sf.sectors.find((x) => x.name === 'bank').share, [1, 0]);
+});

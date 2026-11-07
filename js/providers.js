@@ -144,6 +144,7 @@ export class StaticProvider {
     this.live = false;
     this.static = true;
     this.names = {};
+    this.aiHist = {};
   }
 
   async json(file, { fresh = false } = {}) {
@@ -164,7 +165,9 @@ export class StaticProvider {
       throw new Error(e.message === 'データがありません' ? '見つかりません（東証上場の内国株式のみ対応）' : e.message);
     }
     if (Array.isArray(b)) return b;
-    return b.d.map((d, i) => ({ date: d, open: b.o[i], high: b.h[i], low: b.l[i], close: b.c[i], volume: b.v[i] }));
+    const cs = b.d.map((d, i) => ({ date: d, open: b.o[i], high: b.h[i], low: b.l[i], close: b.c[i], volume: b.v[i] }));
+    if (b.ai) this.aiHist[symbol] = b.ai; // AIの順位の推移（銘柄詳細のグラフ用）
+    return cs;
   }
 
   quote(s) {

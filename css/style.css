@@ -513,3 +513,12 @@ div.hm-t:hover { outline: none; }
 .hchart rect.neg { fill: var(--down); }
 .hchart rect.interim { opacity: 0.45; }
 .conf { display: block; color: #C9D3DD; font-size: 11px; }
+.size { display: grid; gap: 2px; margin: 8px 0; }
+.size > span { color: var(--muted); font-size: 12px; }
+.switch { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.switch h3 { margin: 0 0 4px; }
+.rtrends { display: grid; gap: 4px; margin: 8px 0; }
+.rtrend { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rtrend > small:first-child { width: 4.5em; color: var(--muted); }
+table.sflow td.sf { background: rgba(245, 179, 1, calc(var(--a) * 0.55)); }
+.notif-kinds { display: grid; gap: 4px; margin: 6px 0; }

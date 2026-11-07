@@ -140,3 +140,32 @@ export function liveHealth(track, { minDays = 3, minElapsed = 2, lookback = 10, 
   const failing = days.length >= minDays && excess != null && excess < limit;
   return { failing, days: days.length, done, excess, win, limit, minDays, from: days.at(-1)?.date || null, to: days[0]?.date || null };
 }
+
+// 銘柄ごとの「AIの順位の推移」：記録した毎日の予測から、その日の中での順位（0〜1、1＝最上位）を出す
+// 返り値 { sym: [[date, rank], ...] }（古い順、直近 days 日分）
+export function rankHistory(log, days = 60) {
+  const out = {};
+  for (const date of Object.keys(log?.days || {}).sort().slice(-days)) {
+    const e = Object.entries(log.days[date]).sort((a, b) => a[1] - b[1]);
+    e.forEach(([s], i) => { (out[s] = out[s] || []).push([date, Math.round(((i + 1) / e.length) * 1000) / 1000]); });
+  }
+  return out;
+}
+
+// 業種の流れ：毎日の予測の上位 topPct に、どの業種が何割入っていたか（偏り始めにすぐ気づけるように）
+export function sectorFlow(log, sectors, { days = 30, topPct = 0.05, keep = 8 } = {}) {
+  const dates = Object.keys(log?.days || {}).sort().slice(-days);
+  const share = {};
+  dates.forEach((date, di) => {
+    const e = Object.entries(log.days[date]).sort((a, b) => b[1] - a[1]);
+    const top = e.slice(0, Math.max(1, Math.round(e.length * topPct)));
+    for (const [s] of top) {
+      const k = sectors[s] || 'その他';
+      (share[k] = share[k] || new Array(dates.length).fill(0))[di] += 1 / top.length;
+    }
+  });
+  // 直近10日の平均が大きい業種から
+  const recent = (a) => a.slice(-10).reduce((x, y) => x + y, 0) / Math.min(10, a.length);
+  const order = Object.keys(share).sort((a, b) => recent(share[b]) - recent(share[a])).slice(0, keep);
+  return { dates, topPct, sectors: order.map((k) => ({ name: k, share: share[k].map((v) => Math.round(v * 1000) / 1000) })) };
+}

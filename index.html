@@ -280,6 +280,13 @@
       </fieldset>
 
       <fieldset>
+        <legend>資金管理（買う量の目安）</legend>
+        <label>運用資金（円） <input id="s-capital" type="number" inputmode="numeric" min="0" step="10000" placeholder="例: 1000000（空欄なら目安を出さない）" /></label>
+        <label>1回の取引で失ってよい割合（%） <input id="s-risk" type="number" inputmode="decimal" min="0.1" max="5" step="0.1" /></label>
+        <small class="muted">損切りラインまで下がったときの損失がこの割合に収まる株数を、銘柄の画面に出します（1銘柄は資金の25%まで）。この端末にだけ保存します。</small>
+      </fieldset>
+
+      <fieldset>
         <legend>AI解説（任意・有料のAPIキー）</legend>
         <small class="muted">空欄のままで大丈夫です。無料の自動まとめと、GitHub の無料AIで解説が付きます。</small>
         <label>Anthropic APIキー <input id="s-aikey" type="password" autocomplete="off" placeholder="sk-ant-…（この端末にのみ保存）" /></label>
@@ -292,6 +299,13 @@
           <select id="s-up"><option value="green">緑（欧米式）</option><option value="red">赤（日本式）</option></select>
         </label>
         <button id="s-notify" class="ghost">ブラウザ通知を許可する</button>
+        <div class="notif-kinds">
+          <label class="check"><input type="checkbox" data-notif="hold" /> 保有株の警告（損切りライン割れ・売りシグナル・AI売り候補）</label>
+          <label class="check"><input type="checkbox" data-notif="holdRank" /> 保有株のAIの順位が急に下がった</label>
+          <label class="check"><input type="checkbox" data-notif="earnings" /> 保有株・ウォッチ銘柄の決算が明日</label>
+          <label class="check"><input type="checkbox" data-notif="picks" /> 今日のAIピックが入れ替わった</label>
+          <label class="check"><input type="checkbox" data-notif="alerts" /> 価格アラート</label>
+        </div>
         <small class="muted">アプリを閉じていてもスマホに通知したい場合は README の「ntfy 通知」を設定してください。</small>
       </fieldset>
 

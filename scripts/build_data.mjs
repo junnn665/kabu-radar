@@ -11,7 +11,7 @@ import { buildPanel, panelStats, walkForward, simulate, tradeSummary, DEFAULT_RU
 import { makeRegime } from '../js/market.js';
 import { computeReview } from '../js/review.js';
 import { levels } from '../js/levels.js';
-import { updateLog, evaluateLog, liveHealth } from '../js/aitrack.js';
+import { updateLog, evaluateLog, liveHealth, rankHistory, sectorFlow } from '../js/aitrack.js';
 import { selectPicks, stressOf } from '../js/picks.js';
 import { explain, explainGithub, AI_MODEL_DEFAULT, GH_MODEL_DEFAULT } from '../js/ai.js';
 
@@ -213,6 +213,16 @@ async function main() {
   writeJson(path.join(OUT, 'ai_log20.json'), aiLog20);
   const track20 = evaluateLog(aiLog20, history, nameMap, { horizon: 20, sectors: sectorMap });
   writeJson(path.join(OUT, 'ai_track20.json'), { updatedAt: now.toISOString(), ...track20, health: liveHealth(track20, { minElapsed: 5 }) });
+  // 業種の流れ（AIの上位5%に入った業種の割合の推移）
+  writeJson(path.join(OUT, 'sector_flow.json'), { updatedAt: now.toISOString(), w1: sectorFlow(aiLog, sectorMap), m1: sectorFlow(aiLog20, sectorMap) });
+  // 銘柄ごとのAIの順位の推移は、日足ファイル（candles/<コード>.json）に入れる（銘柄を開いたときだけ読まれる）
+  const rh5 = rankHistory(aiLog), rh20 = rankHistory(aiLog20);
+  for (const s of syms) {
+    if (!rh5[s] && !rh20[s]) continue;
+    const f = path.join(OUT, 'candles', `${s}.json`);
+    const doc = readJson(f, null);
+    if (doc) writeJson(f, { ...doc, ai: { w1: rh5[s] || [], m1: rh20[s] || [] } });
+  }
 
 
   writeJson(path.join(OUT, 'events.json'), eventsDoc);

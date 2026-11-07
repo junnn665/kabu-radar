@@ -69,3 +69,28 @@ export function upcoming(list, today, days = 60) {
   }
   return out.sort((a, b) => a.date.localeCompare(b.date) || a.sym.localeCompare(b.sym)).map((x) => ({ ...x, days: daysBetween(today, x.date) }));
 }
+
+// 値動きの似かた：保有株どうしの直近 n 日の日次リターンの相関。0.7以上の組は「実質同じ動き」として警告
+// series: { sym: candles[] }
+export function correlations(series, n = 60, warnAt = 0.7) {
+  const rets = {};
+  for (const [s, cs] of Object.entries(series)) {
+    if (!cs || cs.length < n + 1) continue;
+    const m = new Map();
+    for (let i = cs.length - n; i < cs.length; i++) m.set(cs[i].date, cs[i].close / cs[i - 1].close - 1);
+    rets[s] = m;
+  }
+  const syms = Object.keys(rets), pairs = [];
+  for (let a = 0; a < syms.length; a++) for (let b = a + 1; b < syms.length; b++) {
+    const x = [], y = [];
+    for (const [d, v] of rets[syms[a]]) if (rets[syms[b]].has(d)) { x.push(v); y.push(rets[syms[b]].get(d)); }
+    if (x.length < n / 2) continue;
+    const mx = x.reduce((p, q) => p + q, 0) / x.length, my = y.reduce((p, q) => p + q, 0) / y.length;
+    let sxy = 0, sxx = 0, syy = 0;
+    for (let i = 0; i < x.length; i++) { sxy += (x[i] - mx) * (y[i] - my); sxx += (x[i] - mx) ** 2; syy += (y[i] - my) ** 2; }
+    if (sxx && syy) pairs.push({ a: syms[a], b: syms[b], r: sxy / Math.sqrt(sxx * syy) });
+  }
+  pairs.sort((p, q) => q.r - p.r);
+  const avg = pairs.length ? pairs.reduce((p, q) => p + q.r, 0) / pairs.length : null;
+  return { n: syms.length, avg, high: pairs.filter((p) => p.r >= warnAt), pairs };
+}
