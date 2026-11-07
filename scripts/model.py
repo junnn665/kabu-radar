@@ -452,7 +452,10 @@ EXP_SETS = {"base": ["A_all", "B_no_market", "C_no_market_sector", "D_sector_neu
             "fins": ["B_rank", "B_rank_fins", "C_rank_fins"],
             "long": ["B_rank_fins", "B_rank_fins_tr", "B_rank_fins_long", "B_rank_fins_wide", "B_rank_fins_long_wide"],
             "blend": ["B_rank_fins", "B_rank_fins_sn50", "B_rank_fins_sn100", "B_rank_fins_x", "B_rank_fins_x_sn50"]}
-DEFAULT_VARIANT = os.environ.get("MODEL_VARIANT") or "B_rank_fins"  # 2026-10-31：決算の数字を加えた設計が、1週間・1か月とも B_rank より上（比較は2026-08まで）
+# 2026-10-31：決算の数字を加えた設計が、1週間・1か月とも B_rank より上（比較は2026-08まで）
+# 2026-11-07：業種の平均予測を半分差し引く設計（sn50）に変更。AIピック（業種2・5銘柄）が1週間先 +0.91%→+1.03%・プラスの月 62%→77%、
+#             1か月先 +3.03%→+3.39%、直近3か月も両方で上、上位2%の業種の偏り 91%→72%。新しい入力（x_）は改善せず不採用
+DEFAULT_VARIANT = os.environ.get("MODEL_VARIANT") or "B_rank_fins_sn50"
 
 
 def add_target(df):

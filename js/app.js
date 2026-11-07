@@ -1333,7 +1333,7 @@ function weeklyHtml() {
 
 // AIの設計の比較（Actions の「AI experiment」の結果。本番の設計を選んだ根拠）
 const VARIANT_JA = {
-  B_rank_fins: '今の設計（順位で学ぶ＋決算）', B_rank_fins_sn50: '業種の偏りを半分減らす', B_rank_fins_sn100: '業種の偏りを無くす',
+  B_rank_fins: '順位で学ぶ＋決算', B_rank_fins_sn50: '業種の偏りを半分減らす', B_rank_fins_sn100: '業種の偏りを無くす',
   B_rank_fins_x: '新しい入力（業種の勢い・感応度）', B_rank_fins_x_sn50: '新しい入力＋業種の偏りを半分減らす', B_rank: '順位で学ぶ（決算なし）',
   B_rank_fins_tr: '実績PER・配当も使う', B_rank_fins_long: '5年分で学ぶ', B_rank_fins_wide: '4年分で検証', B_rank_fins_long_wide: '5年分で学び4年分で検証',
 };

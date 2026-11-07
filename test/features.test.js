@@ -188,3 +188,15 @@ test('週次レポート・モデルの悪化・データの異常チェック',
   assert.equal(r.paperAI.pnl, 10000);
   assert.match(r.text, /日経平均 -5.0%/);
 });
+
+test('答え合わせは設計を変えた日で自動的に区切る', async () => {
+  const { updateLog, variantSince } = await import('../js/aitrack.js');
+  let log = null;
+  for (const [d, v] of [['2026-10-29', null], ['2026-10-30', null], ['2026-11-02', null], ['2026-11-04', 'B_rank_fins'], ['2026-11-09', 'B_rank_fins_sn50'], ['2026-11-10', 'B_rank_fins_sn50']]) {
+    log = updateLog(log, d, { A: [1, 0.9] }, ['A'], v);
+  }
+  assert.equal(variantSince(log, '2026-10-30'), '2026-11-09');
+  log = updateLog(null, '2026-11-02', { A: [1, 0.9] });
+  log = updateLog(log, '2026-11-04', { A: [1, 0.9] }, null, 'B_rank_fins');
+  assert.equal(variantSince(log, '2026-10-30'), '2026-11-02'); // 記録の無い日は前の設計と同じとみなす
+});

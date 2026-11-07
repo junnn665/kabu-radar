@@ -8,9 +8,11 @@ export const COST_RT = 0.002; // 売買コストの目安（往復）。scripts/
 
 // preds: { sym: [予測(%), 順位] }。順位がある（売買代金1億円以上）銘柄だけ記録する
 // picks: その日ホームに出したAIピック（js/picks.js selectPicks の結果のコード）。答え合わせはこれをそのまま採点する
-export function updateLog(log, date, preds, picks = null) {
-  const out = { days: { ...(log?.days || {}) }, picks: { ...(log?.picks || {}) } };
+// variant: その日の予測を作ったモデルの設計（設計を変えた日から答え合わせを分けるため）
+export function updateLog(log, date, preds, picks = null, variant = null) {
+  const out = { days: { ...(log?.days || {}) }, picks: { ...(log?.picks || {}) }, variants: { ...(log?.variants || {}) } };
   if (date && picks) out.picks[date] = picks;
+  if (date && variant) out.variants[date] = variant;
   if (!date || !preds) return trimLog(out);
   const day = {};
   for (const [s, [p, r]] of Object.entries(preds)) if (r != null && Number.isFinite(p)) day[s] = Math.round(p * 1000) / 1000;
@@ -22,6 +24,7 @@ function trimLog(out) {
   const keep = Object.keys(out.days).sort().slice(-KEEP_DAYS);
   out.days = Object.fromEntries(keep.map((d) => [d, out.days[d]]));
   out.picks = Object.fromEntries(Object.entries(out.picks).filter(([d]) => d >= (keep[0] || '')));
+  out.variants = Object.fromEntries(Object.entries(out.variants || {}).filter(([d]) => d >= (keep[0] || '')));
   return out;
 }
 
@@ -169,3 +172,21 @@ export function sectorFlow(log, sectors, { days = 30, topPct = 0.05, keep = 8 } 
   const order = Object.keys(share).sort((a, b) => recent(share[b]) - recent(share[a])).slice(0, keep);
   return { dates, topPct, sectors: order.map((k) => ({ name: k, share: share[k].map((v) => Math.round(v * 1000) / 1000) })) };
 }
+
+// 今の設計になった日：記録の最後の日と同じ設計が続いている最初の日（記録の無い古い日は fallbackSince で区切る）
+export function variantSince(log, fallbackSince) {
+  const v = log?.variants || {};
+  const dates = Object.keys(log?.days || {}).sort();
+  const cur = v[dates.at(-1)];
+  if (!cur) return fallbackSince;
+  let since = dates.at(-1);
+  for (let i = dates.length - 1; i >= 0; i--) {
+    const d = dates[i];
+    if (d < fallbackSince) break;
+    if (v[d] && v[d] !== cur) break;
+    if (!v[d] && cur !== LEGACY_VARIANT) break;
+    since = d;
+  }
+  return since;
+}
+const LEGACY_VARIANT = 'B_rank_fins'; // 設計を記録し始める前（2026-10-30〜）の設計

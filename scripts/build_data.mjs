@@ -11,7 +11,7 @@ import { buildPanel, panelStats, walkForward, simulate, tradeSummary, DEFAULT_RU
 import { makeRegime } from '../js/market.js';
 import { computeReview } from '../js/review.js';
 import { levels } from '../js/levels.js';
-import { updateLog, evaluateLog, liveHealth, rankHistory, sectorFlow } from '../js/aitrack.js';
+import { updateLog, evaluateLog, liveHealth, rankHistory, sectorFlow, variantSince } from '../js/aitrack.js';
 import { selectPicks, stressOf } from '../js/picks.js';
 import { explain, explainGithub, AI_MODEL_DEFAULT, GH_MODEL_DEFAULT } from '../js/ai.js';
 
@@ -204,10 +204,11 @@ async function main() {
   // 今日のAIピック（ホームと同じ選び方）。本番の答え合わせは、この記録をそのまま採点する
   const picks5 = selectPicks(rows, { horizon: 5, today: jstDate, stress });
   const picks20 = selectPicks(rows, { horizon: 20, today: jstDate, stress });
-  const aiLog = updateLog(readJson(path.join(PREV, 'ai_log.json'), null), predDoc?.date, preds, predDoc ? picks5.map((r) => r.sym) : null);
+  const aiLog = updateLog(readJson(path.join(PREV, 'ai_log.json'), null), predDoc?.date, preds, predDoc ? picks5.map((r) => r.sym) : null, predDoc?.model?.variant);
   writeJson(path.join(OUT, 'ai_log.json'), aiLog);
   // 答え合わせは「今のモデルになってから」の分で集計（2026-10-28 に順位で学ぶ設計へ変更）。それ以前の分は previous に要約
-  const AI_TRACK_SINCE = '2026-10-30'; // 2026-10-30：決算の数字を入れたモデルに変更
+  // 2026-10-30：決算の数字を入れたモデルに変更。それ以降は、設計（model.variant）が変わった日で自動的に区切る
+  const AI_TRACK_SINCE = variantSince(aiLog, '2026-10-30');
   const nameMap = Object.fromEntries(Object.entries(meta).map(([k, v]) => [k, v.name]));
   const sectorMap = Object.fromEntries(Object.entries(meta).map(([k, v]) => [k, v.sector || null]));
   const part = (lg, keep) => ({ days: Object.fromEntries(Object.entries(lg.days || {}).filter(([d]) => keep(d))), picks: lg.picks || {} });
@@ -217,9 +218,9 @@ async function main() {
   writeJson(path.join(OUT, 'ai_track.json'), { updatedAt: now.toISOString(), since: AI_TRACK_SINCE, ...track, health: liveHealth(track),
     previous: { until: AI_TRACK_SINCE, note: '前の設計のモデル', total: prevTrack.total } });
   // 1か月先（20営業日）の予測も記録して答え合わせ（確定に1か月かかるので、途中経過も見る）
-  const aiLog20 = updateLog(readJson(path.join(PREV, 'ai_log20.json'), null), pred20Doc?.date, pred20Doc?.preds, pred20Doc ? picks20.map((r) => r.sym) : null);
+  const aiLog20 = updateLog(readJson(path.join(PREV, 'ai_log20.json'), null), pred20Doc?.date, pred20Doc?.preds, pred20Doc ? picks20.map((r) => r.sym) : null, pred20Doc?.model?.variant);
   writeJson(path.join(OUT, 'ai_log20.json'), aiLog20);
-  const track20 = evaluateLog(aiLog20, history, nameMap, { horizon: 20, sectors: sectorMap });
+  const track20 = evaluateLog(part(aiLog20, (d) => d >= variantSince(aiLog20, '2026-10-30')), history, nameMap, { horizon: 20, sectors: sectorMap });
   writeJson(path.join(OUT, 'ai_track20.json'), { updatedAt: now.toISOString(), ...track20, health: liveHealth(track20, { minElapsed: 5 }) });
   // 業種の流れ（AIの上位5%に入った業種の割合の推移）
   writeJson(path.join(OUT, 'sector_flow.json'), { updatedAt: now.toISOString(), w1: sectorFlow(aiLog, sectorMap), m1: sectorFlow(aiLog20, sectorMap) });
