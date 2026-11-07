@@ -1,17 +1,26 @@
 // AI予測の本番答え合わせ。毎日の予測を記録しておき、5営業日後の実際の値動きと比べる。
 // （学習時の検証と違い、実際に公開した予測そのものを採点するので「本番でも効いているか」が分かる）
 
+import { PICK_N, PICK_PER_SECTOR } from './picks.js';
+
 const KEEP_DAYS = 90;
 
 // preds: { sym: [予測(%), 順位] }。順位がある（売買代金1億円以上）銘柄だけ記録する
-export function updateLog(log, date, preds) {
-  const out = { days: { ...(log?.days || {}) } };
-  if (!date || !preds) return out;
+// picks: その日ホームに出したAIピック（js/picks.js selectPicks の結果のコード）。答え合わせはこれをそのまま採点する
+export function updateLog(log, date, preds, picks = null) {
+  const out = { days: { ...(log?.days || {}) }, picks: { ...(log?.picks || {}) } };
+  if (date && picks) out.picks[date] = picks;
+  if (!date || !preds) return trimLog(out);
   const day = {};
   for (const [s, [p, r]] of Object.entries(preds)) if (r != null && Number.isFinite(p)) day[s] = Math.round(p * 1000) / 1000;
   if (Object.keys(day).length) out.days[date] = day;
+  return trimLog(out);
+}
+
+function trimLog(out) {
   const keep = Object.keys(out.days).sort().slice(-KEEP_DAYS);
   out.days = Object.fromEntries(keep.map((d) => [d, out.days[d]]));
+  out.picks = Object.fromEntries(Object.entries(out.picks).filter(([d]) => d >= (keep[0] || '')));
   return out;
 }
 
@@ -33,8 +42,7 @@ function spearman(a, b) {
 
 const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
 
-// 本番のAIピックと同じ選び方（予測の高い順に、同じ業種は2銘柄まで・5銘柄）。js/app.js の aiPicks と scripts/model.py の PICK_* と同じ
-export const PICK_N = 5, PICK_PER_SECTOR = 2;
+// 記録の無い日（2026-11 より前）用：予測の高い順に、同じ業種は2銘柄まで・5銘柄（scripts/model.py の PICK_* と同じ）
 export function pickTop(rows, sectorOf, n = PICK_N, perSector = PICK_PER_SECTOR) {
   const out = [], per = {};
   for (const r of rows) {
@@ -74,14 +82,17 @@ export function evaluateLog(log, history, names = {}, { horizon = 5, topPct = 0.
     rows.sort((a, b) => b.p - a.p);
     const k = Math.max(1, Math.round(rows.length * topPct));
     const top = rows.slice(0, k), bottom = rows.slice(-k);
-    const pk = pickTop(rows, (x) => sectors[x]);
+    // ホームに出したピックの記録があればそれを（決算前・荒れ相場の除外も反映済み）、無ければ同じ考え方で選び直す
+    const logged = log.picks?.[date];
+    const bySym = logged ? new Map(rows.map((r) => [r.s, r])) : null;
+    const pk = logged ? logged.map((s) => bySym.get(s)).filter(Boolean) : pickTop(rows, (x) => sectors[x]);
     const done = elapsed >= horizon;
     const d = {
       date, n: rows.length, elapsed, done,
       top: { n: top.length, excess: mean(top.map((r) => r.ex)), win: top.filter((r) => r.ret > 0).length / top.length, avg: mean(top.map((r) => r.ret)) },
       bottom: { n: bottom.length, excess: mean(bottom.map((r) => r.ex)) },
       // ホームに実際に出したAIピック（業種の偏りを抑えた選び方）の成績
-      pick: { n: pk.length, excess: mean(pk.map((r) => r.ex)), win: pk.filter((r) => r.ret > 0).length / pk.length, avg: mean(pk.map((r) => r.ret)),
+      pick: { n: pk.length, logged: !!logged, excess: mean(pk.map((r) => r.ex)), win: pk.length ? pk.filter((r) => r.ret > 0).length / pk.length : null, avg: mean(pk.map((r) => r.ret)),
         syms: pk.map((r) => ({ sym: r.s, name: names[r.s] || r.s, sector: sectors[r.s] || null, pred: r.p, ret: r.ret, ex: r.ex })) },
       ic: spearman(rows.map((r) => r.p), rows.map((r) => r.ex)),
       picks: top.slice(0, 10).map((r) => ({ sym: r.s, name: names[r.s] || r.s, pred: r.p, ret: r.ret, ex: r.ex })),

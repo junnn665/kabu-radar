@@ -363,6 +363,7 @@ section { margin-bottom: 18px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chips:empty { display: none; }
 .chip-soft { font-size: 12px; background: #1F2733; color: #C9D3DD; border-radius: 999px; padding: 4px 10px; }
+.chip-soft.both { background: #10b98122; color: #6ee7b7; }
 .hero-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; border-top: 1px solid var(--line); padding-top: 12px; font-size: 15px; }
 .hero-foot i, .wprice i { font-style: normal; }
 .row { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 13px 4px; background: transparent; color: var(--text);

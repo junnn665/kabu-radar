@@ -133,3 +133,23 @@ test('CSV import: SBI証券のポートフォリオ（Shift_JIS・特定とNISA�
   const r = extractHoldings(parseCsvText('銘柄コード,銘柄,口座,保有数量,平均取得価額\n7203,トヨタ自動車,特定,"1,000","2,750.5"\n'));
   assert.deepEqual(r.holdings.map((h) => [h.sym, h.shares, h.cost]), [['7203', 1000, 2750.5]]);
 });
+
+test('AIピックの選び方：決算前・もう一方の期間が下半分は除外、荒れ相場は減らす／止める', async () => {
+  const { selectPicks, stressOf } = await import('../js/picks.js');
+  const row = (sym, pred, sector, extra = {}) => ({ sym, pred, aiRank: 0.9, pred20: 1, aiRank20: 0.9, liquid: true, sector, ...extra });
+  const rows = [
+    row('A', 9, 'bank'), row('B', 8, 'bank'), row('C', 7, 'bank'),
+    row('D', 6, 'it', { events: { earnings: '2026-11-09' } }), // 決算まで2日
+    row('E', 5, 'it', { aiRank20: 0.2 }),                       // 1か月先が下半分
+    row('F', 4, 'it'), row('G', 3, 'food'), row('H', 2, 'auto'), row('I', 1, 'auto', { liquid: false }),
+  ];
+  assert.deepEqual(selectPicks(rows, { today: '2026-11-07' }).map((r) => r.sym), ['A', 'B', 'F', 'G', 'H']);
+  assert.equal(selectPicks(rows, { today: '2026-11-01' }).map((r) => r.sym).includes('D'), true); // 決算まで8日なら入る
+  assert.ok(selectPicks(rows, { today: '2026-11-07' })[0].both);
+  const c = (closes) => closes.map((close, i) => ({ date: `2026-10-${10 + i}`, close }));
+  assert.equal(stressOf({ N225: c([100, 100, 100, 100, 100, 100]) }).level, 0);
+  assert.equal(stressOf({ N225: c([100, 100, 100, 100, 99, 95.5]) }).level, 1);
+  assert.equal(stressOf({ N225: c([100, 100, 100, 100, 100, 95]) }).level, 2);
+  assert.equal(selectPicks(rows, { today: '2026-11-07', stress: { n: 3 } }).length, 3);
+  assert.equal(selectPicks(rows, { today: '2026-11-07', stress: { n: 0 } }).length, 0);
+});

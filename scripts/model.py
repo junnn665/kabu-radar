@@ -510,6 +510,12 @@ def train(df_train, cols, label="ex", half_life=None, rank_label=False):
     return lgb.train(PARAMS, ds, num_boost_round=ROUNDS)
 
 
+def _split(t, mask):
+    t = t[mask.fillna(False)] if hasattr(mask, "fillna") else t[mask]
+    return {"n": int(len(t)), "days": int(t["date"].nunique()), "excess": float(t["ex"].mean()) if len(t) else None,
+            "avg": float(t["fwd"].mean()) if len(t) else None, "win": float((t["fwd"] > 0).mean()) if len(t) else None}
+
+
 def evaluate(df, cols, label="ex", quiet=False, ev=("ex", "fwd"), opts=None):
     """ウォークフォワード検証：学習に使っていない期間の成績（評価は常に「市場平均との差」）"""
     dates = np.array(sorted(df["date"].unique()))
@@ -537,7 +543,8 @@ def evaluate(df, cols, label="ex", quiet=False, ev=("ex", "fwd"), opts=None):
             pr = train(tr, cols, label, o.get("half_life"), o.get("rank_label")).predict(te[cols])
         preds.append(pd.DataFrame({"date": te["date"].values, "sym": te["sym"].values, "pred": pr, "ex": te["ex"].values,
                                    "fwd": te["fwd"].values, "sector": te["sector"].values,
-                                   "exo": te["ex_o"].values if "ex_o" in te else np.nan}))
+                                   "exo": te["ex_o"].values if "ex_o" in te else np.nan,
+                                   "mk5": te["n225_ret5"].values if "n225_ret5" in te else np.nan}))
         if not quiet:
             print(f"  検証ブロック {test_dates[0]}〜{test_dates[-1]}: 学習 {len(tr):,}件 → 予測 {len(te):,}件", flush=True)
     if not preds:
@@ -593,7 +600,9 @@ def evaluate(df, cols, label="ex", quiet=False, ev=("ex", "fwd"), opts=None):
                   # 売買コスト（往復 COST_RT）を引いた成績と、翌朝の寄り付きで買った場合の成績
                   "cost": COST_RT, "excessNet": float(picks["ex"].mean() - COST_RT), "avgNet": float(picks["fwd"].mean() - COST_RT),
                   "winNet": float((picks["fwd"] > COST_RT).mean()),
-                  "excessOpen": float(picks["exo"].mean()) if picks["exo"].notna().any() else None},
+                  "excessOpen": float(picks["exo"].mean()) if picks["exo"].notna().any() else None,
+                  # 日経平均が直近5日で4%以上下げた日（js/picks.js の「注意」）とそれ以外での成績：荒れ相場でピックを減らす根拠の確認用
+                  "afterDrop": _split(picks, picks["mk5"] <= np.log(0.96)), "normal": _split(picks, picks["mk5"] > np.log(0.96))},
         # 予測の強さ（順位）ごとの過去の成績：銘柄詳細で「この強さの予測は過去に勝率◯%」と出す
         "rankBins": [{"lo": lo, "hi": hi, "n": int(len(b)), "excess": float(b["ex"].mean()), "win": float((b["fwd"] > 0).mean()), "exWin": float((b["ex"] > 0).mean())}
                      for lo, hi in RANK_BINS for b in [p[(p["rank"] > lo) & (p["rank"] <= hi)]] if len(b)],

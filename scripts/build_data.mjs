@@ -12,6 +12,7 @@ import { makeRegime } from '../js/market.js';
 import { computeReview } from '../js/review.js';
 import { levels } from '../js/levels.js';
 import { updateLog, evaluateLog, liveHealth } from '../js/aitrack.js';
+import { selectPicks, stressOf } from '../js/picks.js';
 import { explain, explainGithub, AI_MODEL_DEFAULT, GH_MODEL_DEFAULT } from '../js/ai.js';
 
 const args = Object.fromEntries(
@@ -115,7 +116,9 @@ async function main() {
     const l = cs.at(-1), p = cs.at(-2) || l;
     return [k, { price: l.close, changePct: (l.close / p.close - 1) * 100, date: l.date, spark: cs.slice(-30).map((c) => c.close) }];
   }));
-  writeJson(path.join(OUT, 'market.json'), { updatedAt: now.toISOString(), indices, regime: regimeNow });
+  // 相場の荒れ具合（AIピックを減らす／止める判断。js/picks.js stressOf）
+  const stress = stressOf(market);
+  writeJson(path.join(OUT, 'market.json'), { updatedAt: now.toISOString(), indices, regime: regimeNow, stress });
 
   // 3) バックテスト（売買代金1億円以上の日だけ・市場平均との差でも評価）とウォークフォワード学習
   const prevBt = MODE === 'intraday' ? readJson(path.join(PREV, 'backtest.json'), null) : null;
@@ -166,24 +169,6 @@ async function main() {
   // AI予測の判断理由（銘柄ごとの要因）と、本番の答え合わせ
   const reasonsDoc = readJson(path.join(RAW, 'ai_reasons.json'), null);
   if (reasonsDoc) writeJson(path.join(OUT, 'ai_reasons.json'), reasonsDoc);
-  const aiLog = updateLog(readJson(path.join(PREV, 'ai_log.json'), null), predDoc?.date, preds);
-  writeJson(path.join(OUT, 'ai_log.json'), aiLog);
-  // 答え合わせは「今のモデルになってから」の分で集計（2026-10-28 に順位で学ぶ設計へ変更）。それ以前の分は previous に要約
-  const AI_TRACK_SINCE = '2026-10-30'; // 2026-10-30：決算の数字を入れたモデルに変更
-  const nameMap = Object.fromEntries(Object.entries(meta).map(([k, v]) => [k, v.name]));
-  const sectorMap = Object.fromEntries(Object.entries(meta).map(([k, v]) => [k, v.sector || null]));
-  const part = (lg, keep) => ({ days: Object.fromEntries(Object.entries(lg.days || {}).filter(([d]) => keep(d))) });
-  const prevTrack = evaluateLog(part(aiLog, (d) => d < AI_TRACK_SINCE), history, nameMap, { sectors: sectorMap });
-  const track = evaluateLog(part(aiLog, (d) => d >= AI_TRACK_SINCE), history, nameMap, { sectors: sectorMap });
-  // health：本番で外れ続けていたら、ホームのAIピックを止める判断（js/aitrack.js liveHealth）
-  writeJson(path.join(OUT, 'ai_track.json'), { updatedAt: now.toISOString(), since: AI_TRACK_SINCE, ...track, health: liveHealth(track),
-    previous: { until: AI_TRACK_SINCE, note: '前の設計のモデル', total: prevTrack.total } });
-  // 1か月先（20営業日）の予測も記録して答え合わせ（確定に1か月かかるので、途中経過も見る）
-  const aiLog20 = updateLog(readJson(path.join(PREV, 'ai_log20.json'), null), pred20Doc?.date, pred20Doc?.preds);
-  writeJson(path.join(OUT, 'ai_log20.json'), aiLog20);
-  const track20 = evaluateLog(aiLog20, history, nameMap, { horizon: 20, sectors: sectorMap });
-  writeJson(path.join(OUT, 'ai_track20.json'), { updatedAt: now.toISOString(), ...track20, health: liveHealth(track20, { minElapsed: 5 }) });
-
   // 4) スクリーナー（地合いフィルターは検証で逆効果だったため、score には反映しない。penalty は参考値）
   const details = {};
   const rows = syms.map((s) => {
@@ -208,6 +193,28 @@ async function main() {
     };
   }).sort((x, y) => y.score - x.score || (y.turnover || 0) - (x.turnover || 0));
   writeJson(path.join(OUT, 'screener.json'), { updatedAt: now.toISOString(), rows });
+  // 今日のAIピック（ホームと同じ選び方）。本番の答え合わせは、この記録をそのまま採点する
+  const picks5 = selectPicks(rows, { horizon: 5, today: jstDate, stress });
+  const picks20 = selectPicks(rows, { horizon: 20, today: jstDate, stress });
+  const aiLog = updateLog(readJson(path.join(PREV, 'ai_log.json'), null), predDoc?.date, preds, predDoc ? picks5.map((r) => r.sym) : null);
+  writeJson(path.join(OUT, 'ai_log.json'), aiLog);
+  // 答え合わせは「今のモデルになってから」の分で集計（2026-10-28 に順位で学ぶ設計へ変更）。それ以前の分は previous に要約
+  const AI_TRACK_SINCE = '2026-10-30'; // 2026-10-30：決算の数字を入れたモデルに変更
+  const nameMap = Object.fromEntries(Object.entries(meta).map(([k, v]) => [k, v.name]));
+  const sectorMap = Object.fromEntries(Object.entries(meta).map(([k, v]) => [k, v.sector || null]));
+  const part = (lg, keep) => ({ days: Object.fromEntries(Object.entries(lg.days || {}).filter(([d]) => keep(d))), picks: lg.picks || {} });
+  const prevTrack = evaluateLog(part(aiLog, (d) => d < AI_TRACK_SINCE), history, nameMap, { sectors: sectorMap });
+  const track = evaluateLog(part(aiLog, (d) => d >= AI_TRACK_SINCE), history, nameMap, { sectors: sectorMap });
+  // health：本番で外れ続けていたら、ホームのAIピックを止める判断（js/aitrack.js liveHealth）
+  writeJson(path.join(OUT, 'ai_track.json'), { updatedAt: now.toISOString(), since: AI_TRACK_SINCE, ...track, health: liveHealth(track),
+    previous: { until: AI_TRACK_SINCE, note: '前の設計のモデル', total: prevTrack.total } });
+  // 1か月先（20営業日）の予測も記録して答え合わせ（確定に1か月かかるので、途中経過も見る）
+  const aiLog20 = updateLog(readJson(path.join(PREV, 'ai_log20.json'), null), pred20Doc?.date, pred20Doc?.preds, pred20Doc ? picks20.map((r) => r.sym) : null);
+  writeJson(path.join(OUT, 'ai_log20.json'), aiLog20);
+  const track20 = evaluateLog(aiLog20, history, nameMap, { horizon: 20, sectors: sectorMap });
+  writeJson(path.join(OUT, 'ai_track20.json'), { updatedAt: now.toISOString(), ...track20, health: liveHealth(track20, { minElapsed: 5 }) });
+
+
   writeJson(path.join(OUT, 'events.json'), eventsDoc);
   writeJson(path.join(OUT, 'news.json'), newsDoc);
   writeJson(path.join(OUT, 'fundamentals.json'), fundaDoc);
@@ -290,14 +297,16 @@ async function main() {
       return false;
     });
     const held = new Set(paperAI.open.map((p) => p.sym));
-    const cands = (TRADE ? rows : []).filter((r) => r.liquid && r.aiRank >= AI_RULES.entryRank && r.pred > 0 && !held.has(r.sym)
-      && !paperAI.closed.some((c) => c.sym === r.sym && c.exitDate === quotes[r.sym][3])).sort((a, b) => b.pred - a.pred);
+    // 買う銘柄はホームのAIピックと同じ選び方（js/picks.js：業種2銘柄まで・決算前は除外・1か月先が下半分は除外・荒れ相場は減らす／止める）
     const perSector = {};
     for (const p of paperAI.open) { const sec = rowBy[p.sym]?.sector || '-'; perSector[sec] = (perSector[sec] || 0) + 1; }
+    const cands = TRADE ? selectPicks(rows, { horizon: 5, n: AI_RULES.maxNew, today: jstDate, stress,
+      skip: (r) => !(r.aiRank >= AI_RULES.entryRank && r.pred > 0) || held.has(r.sym) || (perSector[r.sector || '-'] || 0) >= AI_RULES.maxPerSector
+        || paperAI.closed.some((c) => c.sym === r.sym && c.exitDate === quotes[r.sym][3]) }) : [];
     for (const r of cands) {
       if (openedAI.length >= AI_RULES.maxNew || paperAI.open.length >= AI_RULES.maxOpen) break;
       const sec = r.sector || '-';
-      if ((perSector[sec] || 0) >= AI_RULES.maxPerSector) continue; // 同じ業種ばかりにならないよう分散
+      if ((perSector[sec] || 0) >= AI_RULES.maxPerSector) continue; // 同じ業種ばかりにならないよう分散（保有中の分も含めて）
       perSector[sec] = (perSector[sec] || 0) + 1;
       const p = { sym: r.sym, name: r.name, entryDate: quotes[r.sym][3], entryPrice: r.price, pred: r.pred, aiRank: r.aiRank, lastPrice: r.price, ret: 0, held: 0 };
       paperAI.open.push(p); openedAI.push(p);
