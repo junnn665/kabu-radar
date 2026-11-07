@@ -1,8 +1,8 @@
 // オフライン対応：常にネットワーク優先、つながらないときだけキャッシュ
-const CACHE = 'kabuka-hack-v22';
+const CACHE = 'kabuka-hack-v23';
 const SHELL = [
   './', 'index.html', 'css/style.css', 'manifest.webmanifest',
-  'js/app.js', 'js/providers.js', 'js/signals.js', 'js/indicators.js', 'js/backtest.js', 'js/chart.js', 'js/ai.js', 'js/explain.js', 'js/levels.js', 'js/market.js', 'js/review.js', 'js/aitrack.js', 'js/csvimport.js', 'js/portfolio.js', 'js/treemap.js',
+  'js/app.js', 'js/providers.js', 'js/signals.js', 'js/indicators.js', 'js/backtest.js', 'js/chart.js', 'js/ai.js', 'js/explain.js', 'js/levels.js', 'js/market.js', 'js/review.js', 'js/aitrack.js', 'js/picks.js', 'js/csvimport.js', 'js/portfolio.js', 'js/treemap.js',
   'icons/icon-192.png', 'icons/icon-512.png',
 ];
 

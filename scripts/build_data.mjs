@@ -43,9 +43,17 @@ function marketOpenJP() {
 }
 const daysUntil = (d) => (d ? Math.round((Date.parse(d) - Date.parse(jstDate)) / 86400e3) : null);
 
-async function ntfy(title, message, tags = []) {
+// 通知の種類（リポジトリの変数 NTFY_KINDS にカンマ区切りで指定。空なら全部）
+//   strong：強い買いシグナル、paper：ペーパートレードの売買、earnings：注目銘柄の決算が近い、picks：今日のAIピックの入れ替え、
+//   health：AIピックの一時停止／再開、model：モデルの成績の悪化、weekly：週次レポート、data：データの異常
+export const NTFY_ALL = ['strong', 'paper', 'earnings', 'picks', 'health', 'model', 'weekly', 'data'];
+const ntfyKinds = new Set((process.env.NTFY_KINDS || '').split(',').map((x) => x.trim()).filter(Boolean));
+const ntfyOn = (kind) => !ntfyKinds.size || ntfyKinds.has(kind);
+const sent = [];
+async function ntfy(kind, title, message, tags = []) {
+  sent.push({ kind, title, message: message.slice(0, 500), at: now.toISOString() });
   const topic = process.env.NTFY_TOPIC;
-  if (!topic) return;
+  if (!topic || !ntfyOn(kind)) return;
   try {
     await fetch('https://ntfy.sh/', {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -360,10 +368,10 @@ async function main() {
   const prevScore = Object.fromEntries((prevScreener.rows || []).map((r) => [r.sym, r.score]));
   const newStrong = rows.filter((r) => r.liquid && r.score >= STRONG && prevScreener.rows?.length && (prevScore[r.sym] ?? 0) < STRONG).slice(0, 10);
   if (newStrong.length) {
-    await ntfy('強い買いシグナル', newStrong.map((r) => `${r.name}(${r.sym}) ${r.score}点: ${r.ids.slice(0, 2).map((id) => SIGNAL_MAP[id].label).join('・')}`).join('\n'), ['chart_with_upwards_trend']);
+    await ntfy('strong', '強い買いシグナル', newStrong.map((r) => `${r.name}(${r.sym}) ${r.score}点: ${r.ids.slice(0, 2).map((id) => SIGNAL_MAP[id].label).join('・')}`).join('\n'), ['chart_with_upwards_trend']);
   }
   if (opened.length || closedNow.length) {
-    await ntfy('ペーパートレード', [
+    await ntfy('paper', 'ペーパートレード', [
       ...opened.map((p) => `買 ${p.name}(${p.sym}) @${p.entryPrice}`),
       ...closedNow.map((t) => `売 ${t.name}(${t.sym}) ${t.reason} ${(t.ret * 100).toFixed(1)}%`),
     ].join('\n'), ['memo']);
@@ -375,18 +383,127 @@ async function main() {
       const de = daysUntil(e.earnings);
       return de != null && de >= 0 && de <= 2 ? [`${r.name} 決算 ${de === 0 ? '今日' : de + '日後'}`] : [];
     });
-    if (soon.length) await ntfy('注目銘柄の決算が近い', soon.slice(0, 15).join('\n'), ['warning']);
+    if (soon.length) await ntfy('earnings', '注目銘柄の決算が近い', soon.slice(0, 15).join('\n'), ['warning']);
     notified.eventsDate = jstDate;
   }
+  // 今日のAIピックの入れ替え（朝の全件更新のとき、前の日のピックと比べる）
+  if (TRADE && predDoc) {
+    const prevPk = Object.entries(readJson(path.join(PREV, 'ai_log.json'), {}).picks || {}).filter(([d]) => d < predDoc.date).sort().at(-1)?.[1] || [];
+    const added = picks5.filter((r) => !prevPk.includes(r.sym));
+    if (notified.picksDate !== predDoc.date && added.length) {
+      await ntfy('picks', '今日のAIピック', `${picks5.map((r) => `${r.name}(${r.sym})${prevPk.includes(r.sym) ? '' : ' 🆕'}`).join('\n')}${stress.level ? `\n相場が荒れ気味のため${stress.n}銘柄に絞っています` : ''}`, ['sparkles']);
+      notified.picksDate = predDoc.date;
+    }
+  }
+  // AIピックの一時停止／再開（本番の答え合わせで外れ続けているか）が変わったとき
+  const failingNow = !!liveHealth(track).failing;
+  if (notified.aiFailing != null && notified.aiFailing !== failingNow) {
+    const h = liveHealth(track);
+    await ntfy('health', failingNow ? 'AIピックを一時停止' : 'AIピックを再開', failingNow
+      ? `本番の答え合わせで、AIピックが市場平均より ${(h.excess * 100).toFixed(1)}%（直近${h.days}日分）と外れています。成績が戻るまでホームはシグナル点数で表示します。`
+      : `AIピックの成績が戻りました（直近${h.days}日分で市場平均より ${(h.excess * 100).toFixed(1)}%）。`, ['warning']);
+  }
+  notified.aiFailing = failingNow;
+  // モデルの成績の悪化（学習に使っていない期間の直近3か月が、全期間より大きく悪い）。週に1回まで
+  const drift = modelDrift(predDoc?.report, pred20Doc?.report);
+  if (drift.length && TRADE && (!notified.modelDrift || daysUntil(notified.modelDrift) <= -7)) {
+    await ntfy('model', 'AIモデルの成績が落ちています', drift.join('\n'), ['chart_with_downwards_trend']);
+    notified.modelDrift = jstDate;
+  }
+  // データの異常（取得できた銘柄が少ない、日足が古い、決算データが古い、予測が作れていない）
+  const dataHealth = checkData({ fetchMeta, latestBar, predDoc, rows, mode: MODE });
+  if (dataHealth.issues.length && notified.dataDate !== jstDate) {
+    await ntfy('data', 'データの取得に問題があります', dataHealth.issues.join('\n'), ['rotating_light']);
+    notified.dataDate = jstDate;
+  }
+  // 週次レポート：新しい週の最初の朝の更新で、前の週をまとめる
+  const weekly = readJson(path.join(PREV, 'weekly.json'), { reports: [] });
+  const wk = weekKey(latestBar);
+  if (TRADE && weekly.lastWeek !== wk) {
+    if (weekly.lastWeek) {
+      const rep = weeklyReport({ week: weekly.lastWeek, track, paperAI, paper, market, stress, dataHealth });
+      weekly.reports = [rep, ...(weekly.reports || [])].slice(0, 12);
+      await ntfy('weekly', `週次レポート（${rep.label}）`, rep.text, ['bar_chart']);
+    }
+    weekly.lastWeek = wk;
+  }
+  writeJson(path.join(OUT, 'weekly.json'), weekly);
   writeJson(path.join(OUT, 'notified.json'), notified);
 
   writeJson(path.join(OUT, 'meta.json'), {
     updatedAt: now.toISOString(), symbols: syms.length, universe: uniDoc.symbols.length, liquid: rows.filter((r) => r.liquid).length,
     ai: aiOn ? (useClaude ? 'Claude' : 'GitHub Models') : false, aiError, ntfy: !!process.env.NTFY_TOPIC,
     eventsDate: eventsDoc.date || null, fetch: fetchMeta, buildSeconds: Math.round((Date.now() - t0) / 1000), mode: MODE,
-    model: predDoc ? { date: predDoc.date, trainedAt: predDoc.model?.trainedAt, ic: predDoc.report?.ic ?? null } : null,
+    model: predDoc ? { date: predDoc.date, trainedAt: predDoc.model?.trainedAt, ic: predDoc.report?.ic ?? null, finsEnd: predDoc.finsEnd || null } : null,
+    dataHealth, modelDrift: drift, notifications: sent, ntfyKinds: ntfyKinds.size ? [...ntfyKinds] : NTFY_ALL,
   });
   console.log(`built ${syms.length} symbols (${rows.filter((r) => r.liquid).length} liquid); strong=${rows.filter((r) => r.liquid && r.score >= STRONG).length}; paper open=${paper.open.length} (+${opened.length}/-${closedNow.length}); ${Math.round((Date.now() - t0) / 1000)}s`);
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+// 週の目印（その週の月曜の日付）
+export function weekKey(date) {
+  if (!date) return null;
+  const d = new Date(date + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
+  return d.toISOString().slice(0, 10);
+}
+
+// モデルの成績の悪化：検証の直近3か月（AIピックの選び方）がマイナスで、全期間より1%以上悪い
+export function modelDrift(rep5, rep20) {
+  const out = [];
+  for (const [rep, label] of [[rep5, '1週間先'], [rep20, '1か月先']]) {
+    const pk = rep?.picks;
+    if (!pk || pk.recent3m == null) continue;
+    if (pk.recent3m < 0 && pk.excess - pk.recent3m >= 0.01) out.push(`${label}：直近3か月のAIピック ${(pk.recent3m * 100).toFixed(1)}%（検証期間全体は ${(pk.excess * 100).toFixed(1)}%）`);
+  }
+  return out;
+}
+
+// データの異常チェック
+export function checkData({ fetchMeta, latestBar, predDoc, rows, mode, today = jstDate }) {
+  const issues = [];
+  const h = fetchMeta?.history;
+  if (h?.universe && mode === 'daily' && h.fetched / h.universe < 0.9) issues.push(`日足を取得できた銘柄が ${h.fetched}/${h.universe} と少なめです`);
+  if (fetchMeta?.errors?.length) issues.push(`取得エラー ${fetchMeta.errors.length}件（${String(fetchMeta.errors[0]).slice(0, 80)}）`);
+  const stale = latestBar ? Math.round((Date.parse(today) - Date.parse(latestBar)) / 86400e3) : null;
+  if (stale != null && stale > 4) issues.push(`最新の日足が ${latestBar}（${stale}日前）のままです`);
+  if (!predDoc) issues.push('AI予測が作れていません（モデルの学習・予測でエラー）');
+  const liquid = rows.filter((r) => r.liquid);
+  const noPred = liquid.filter((r) => r.pred == null).length;
+  if (predDoc && liquid.length && noPred / liquid.length > 0.1) issues.push(`売買代金のある銘柄のうち ${noPred}銘柄に予測がありません`);
+  const fe = predDoc?.finsEnd;
+  if (fe && (Date.parse(today) - Date.parse(fe)) / 86400e3 > 130) issues.push(`J-Quants の決算データが ${fe} までで古くなっています（週1回の取得を確認）`);
+  return { ok: !issues.length, issues, checkedAt: new Date().toISOString(), stale };
+}
+
+// 週次レポート（前の週のAIピック・仮想口座・相場）
+export function weeklyReport({ week, track, paperAI, paper, market, stress, dataHealth }) {
+  const end = new Date(week + 'T00:00:00Z'); end.setUTCDate(end.getUTCDate() + 6);
+  const until = end.toISOString().slice(0, 10);
+  const inWeek = (d) => d >= week && d <= until;
+  const days = (track?.days || []).filter((d) => inWeek(d.date) && d.pick?.excess != null);
+  const pickEx = days.length ? days.reduce((a, d) => a + d.pick.excess, 0) / days.length : null;
+  const closedAI = (paperAI?.closed || []).filter((t) => inWeek(t.exitDate));
+  const closed = (paper?.closed || []).filter((t) => inWeek(t.exitDate));
+  const sum = (ts) => ({ n: ts.length, pnl: Math.round(ts.reduce((a, t) => a + (t.pnl || 0), 0)), win: ts.length ? ts.filter((t) => t.ret > 0).length / ts.length : null });
+  const n = market?.N225 || [];
+  const wk = n.filter((c) => inWeek(c.date));
+  const before = n.filter((c) => c.date < week).at(-1);
+  const n225 = wk.length && before ? wk.at(-1).close / before.close - 1 : null;
+  const best = days.flatMap((d) => d.pick.syms || []).sort((a, b) => b.ex - a.ex);
+  const r = { week, until, label: `${+week.slice(5, 7)}/${+week.slice(8, 10)}〜${+until.slice(5, 7)}/${+until.slice(8, 10)}`,
+    n225, picks: { days: days.length, excess: pickEx, best: best.slice(0, 3), worst: best.slice(-3).reverse() },
+    paperAI: sum(closedAI), paper: sum(closed), stress: stress?.level || 0, health: track ? liveHealth(track) : null, dataOk: dataHealth?.ok ?? true };
+  const pct = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${(v * 100).toFixed(1)}%`);
+  r.text = [
+    `日経平均 ${pct(n225)}`,
+    `AIピック（${days.length}日分・途中経過を含む）：市場平均より ${pct(pickEx)}`,
+    best.length ? `良かった：${best.slice(0, 2).map((x) => `${x.name} ${pct(x.ret)}`).join('、')}` : '',
+    `AIの仮想口座：${r.paperAI.n}回決済 ${r.paperAI.pnl >= 0 ? '+' : ''}¥${r.paperAI.pnl.toLocaleString('ja-JP')}`,
+    `シグナルの仮想口座：${r.paper.n}回決済 ${r.paper.pnl >= 0 ? '+' : ''}¥${r.paper.pnl.toLocaleString('ja-JP')}`,
+    r.health?.failing ? 'AIピックは一時停止中' : '',
+  ].filter(Boolean).join('\n');
+  return r;
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) main().catch((e) => { console.error(e); process.exit(1); });

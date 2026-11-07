@@ -176,7 +176,7 @@ const nameOf = (s) => state.universe?.get(s)?.name || state.quotes[s]?.name || s
 
 async function loadServer() {
   if (!state.provider.static) { state.server = {}; return; }
-  const files = ['screener', 'backtest', 'paper', 'paper_ai', 'news', 'ai', 'meta', 'market', 'review', 'model', 'model20', 'ai_reasons', 'ai_track', 'ai_track20', 'sector_flow', 'experiments', 'dividends', 'tdnet'];
+  const files = ['screener', 'backtest', 'paper', 'paper_ai', 'news', 'ai', 'meta', 'market', 'review', 'model', 'model20', 'ai_reasons', 'ai_track', 'ai_track20', 'sector_flow', 'experiments', 'weekly', 'dividends', 'tdnet'];
   if (!state.universe) {
     try {
       const u = await state.provider.json('universe.json', { fresh: true });
@@ -1298,7 +1298,58 @@ function checkPicksChange(day) {
 
 // ---------- 答え合わせ ----------
 function aiTrackSection() {
-  return sectorFlowHtml() + trackBlock(state.server.ai_track, '1週間先') + trackBlock(state.server.ai_track20, '1か月先', true) + '<h3>シグナル点数「強い買い」の答え合わせ</h3>';
+  return dataHealthHtml() + weeklyHtml() + sectorFlowHtml() + trackBlock(state.server.ai_track, '1週間先') + trackBlock(state.server.ai_track20, '1か月先', true) + '<h3>シグナル点数「強い買い」の答え合わせ</h3>';
+}
+
+// データの異常・モデルの成績の悪化（毎回の更新でチェック。ntfy を設定していればスマホにも届く）
+function dataHealthHtml() {
+  const m = state.server.meta, dh = m?.dataHealth, drift = m?.modelDrift || [];
+  if (!dh && !drift.length) return '';
+  if (dh?.ok && !drift.length) return `<p class="muted small">データの点検：問題なし（${esc((dh.checkedAt || '').slice(0, 16).replace('T', ' '))}）</p>`;
+  return `${dh && !dh.ok ? `<p class="warn"><b>データの取得に問題があります</b><br>${dh.issues.map(esc).join('<br>')}</p>` : ''}
+    ${drift.length ? `<p class="warn"><b>AIモデルの最近の成績が落ちています</b><br>${drift.map(esc).join('<br>')}</p>` : ''}`;
+}
+
+// 週次レポート（前の週のまとめ）＋ 保有株のこの5営業日
+function weeklyHtml() {
+  const rs = state.server.weekly?.reports || [];
+  const hold = state.settings.holdings.map((h) => { const cs = state.candles[h.sym]; return cs?.length > 6 ? { sym: h.sym, r: cs.at(-1).close / cs.at(-6).close - 1 } : null; }).filter(Boolean)
+    .sort((a, b) => b.r - a.r);
+  if (!rs.length && !hold.length) return '';
+  const r = rs[0];
+  return `<h3>週次レポート${r ? ` <small class="muted">${esc(r.label)}</small>` : ''}</h3>
+    ${r ? `<div class="kpis">
+      <div><small>日経平均</small><b class="${sign(r.n225)}">${pctf(r.n225, 1)}</b></div>
+      <div><small>AIピック（市場平均との差）</small><b class="${sign(r.picks.excess)}">${pctf(r.picks.excess, 1)}</b><small>${r.picks.days}日分・途中経過を含む</small></div>
+      <div><small>AIの仮想口座</small><b class="${sign(r.paperAI.pnl)}">${yen(r.paperAI.pnl)}</b><small>${r.paperAI.n}回決済</small></div>
+      <div><small>シグナルの仮想口座</small><b class="${sign(r.paper.pnl)}">${yen(r.paper.pnl)}</b><small>${r.paper.n}回決済</small></div>
+    </div>
+    ${r.picks.best?.length ? `<p class="small">良かったピック：${r.picks.best.map((x) => `${esc(x.name)} <span class="${sign(x.ret)}">${pctf(x.ret, 1)}</span>`).join('、')}／悪かったピック：${r.picks.worst.map((x) => `${esc(x.name)} <span class="${sign(x.ret)}">${pctf(x.ret, 1)}</span>`).join('、')}</p>` : ''}
+    ${rs.length > 1 ? `<details><summary class="small">これまでの週</summary><div class="table-wrap"><table><thead><tr><th>週</th><th class="num">日経平均</th><th class="num">AIピック</th><th class="num">AI口座</th></tr></thead><tbody>
+      ${rs.slice(1).map((x) => `<tr><td>${esc(x.label)}</td><td class="num mono ${sign(x.n225)}">${pctf(x.n225, 1)}</td><td class="num mono ${sign(x.picks.excess)}">${pctf(x.picks.excess, 1)}</td><td class="num mono ${sign(x.paperAI.pnl)}">${yen(x.paperAI.pnl)}</td></tr>`).join('')}
+    </tbody></table></div></details>` : ''}` : ''}
+    ${hold.length ? `<p class="small">保有株のこの5営業日：${hold.map((h) => `${esc(nameOf(h.sym))} <span class="mono ${sign(h.r)}">${pctf(h.r, 1)}</span>`).join('、')}</p>` : ''}`;
+}
+
+// AIの設計の比較（Actions の「AI experiment」の結果。本番の設計を選んだ根拠）
+const VARIANT_JA = {
+  B_rank_fins: '今の設計（順位で学ぶ＋決算）', B_rank_fins_sn50: '業種の偏りを半分減らす', B_rank_fins_sn100: '業種の偏りを無くす',
+  B_rank_fins_x: '新しい入力（業種の勢い・感応度）', B_rank_fins_x_sn50: '新しい入力＋業種の偏りを半分減らす', B_rank: '順位で学ぶ（決算なし）',
+  B_rank_fins_tr: '実績PER・配当も使う', B_rank_fins_long: '5年分で学ぶ', B_rank_fins_wide: '4年分で検証', B_rank_fins_long_wide: '5年分で学び4年分で検証',
+};
+function experimentsHtml() {
+  const ex = state.server.experiments;
+  if (!Array.isArray(ex) || !ex.length) return '';
+  return `<h3>AIの設計の比較 <small class="muted">学習に使っていない期間・同じ条件で比較</small></h3>
+    ${ex.slice(0, 6).map((e) => `<details class="week"><summary><b>${esc(e.set)}</b><span class="muted">${esc((e.runAt || '').slice(0, 10))}</span></summary>
+      <div class="table-wrap"><table><thead><tr><th>設計</th><th class="num">AIピック</th><th class="num">勝率</th><th class="num">直近3か月</th><th class="num">上位2%</th><th class="num">偏り</th><th class="num">IC</th></tr></thead><tbody>
+      ${Object.entries(e.results || {}).map(([k, r]) => `<tr><td>${esc(VARIANT_JA[k] || k)}${k === state.server.model?.model?.variant ? ' <small class="badge">本番</small>' : ''}</td>
+        <td class="num mono ${sign(r.picks?.excess)}">${pctf(r.picks?.excess, 2)}</td><td class="num mono">${r.picks?.win != null ? Math.round(r.picks.win * 100) + '%' : '—'}</td>
+        <td class="num mono ${sign(r.picks?.recent3m ?? r.recent?.top2_3m)}">${pctf(r.picks?.recent3m ?? r.recent?.top2_3m, 2)}</td>
+        <td class="num mono ${sign(r.top2pct?.excess)}">${pctf(r.top2pct?.excess, 2)}</td><td class="num mono">${r.sectorConcentration != null ? Math.round(r.sectorConcentration * 100) + '%' : '—'}</td>
+        <td class="num mono">${r.ic != null ? r.ic.toFixed(3) : '—'}</td></tr>`).join('')}
+      </tbody></table></div></details>`).join('')}
+    <p class="muted small">「AIピック」は本番と同じ選び方（同じ業種は2銘柄まで・1日5銘柄）、「偏り」は上位2%のうち最も多い業種の割合です。</p>`;
 }
 
 // 業種の流れ：AIの予測の上位5%に、どの業種が何割入っているか（直近10営業日）。1つの業種が半分を超えたら注意
@@ -1325,7 +1376,7 @@ function healthChart(t) {
   return `<div class="hchart"><small class="muted">日ごとのAIピックの成績（市場平均との差・濃い棒は${t.horizon}営業日後まで確定）</small>
     <svg viewBox="0 0 ${W} ${Hh}" role="img" aria-label="日ごとの成績">
       <line x1="${pad}" x2="${W}" y1="${y(0)}" y2="${y(0)}" class="axis"/>
-      ${lim != null && lim < 0 ? `<line x1="${pad}" x2="${W}" y1="${y(lim)}" y2="${y(lim)}" class="limit"/><text x="${pad}" y="${y(lim) + 10}" class="lbl">止める目安 ${pctf(lim, 0)}</text>` : ''}
+      ${lim != null && lim < 0 ? `<line x1="${pad}" x2="${W}" y1="${y(lim)}" y2="${y(lim)}" class="limit"/><text x="${W - 2}" y="${y(lim) - 3}" text-anchor="end" class="lbl">止める目安 ${pctf(lim, 0)}</text>` : ''}
       <text x="0" y="10" class="lbl">+${(mx * 100).toFixed(0)}%</text><text x="0" y="${Hh - 2}" class="lbl">−${(mx * 100).toFixed(0)}%</text>
       ${ds.map((d, i) => { const v = d.pick.excess, y0 = y(0), y1 = y(v); return `<rect x="${pad + i * bw + 1}" y="${Math.min(y0, y1)}" width="${Math.max(1, bw - 2)}" height="${Math.max(1, Math.abs(y1 - y0))}" class="${v >= 0 ? 'pos' : 'neg'}${d.done ? '' : ' interim'}"><title>${esc(d.date)} ${pctf(v, 2)}${d.done ? '' : `（途中経過 ${d.elapsed}日目）`}</title></rect>`; }).join('')}
     </svg><small class="muted">${esc(ds[0].date)} 〜 ${esc(ds.at(-1).date)}</small></div>`;
@@ -1488,7 +1539,7 @@ function renderBacktest() {
   const exc = (st) => (st?.excess != null ? `<b class="${sign(st.excess)}">${pctf(st.excess, 2)}</b>` : '<b>—</b>');
   const kpi = (label, st) => `<div><small>${label}</small>${exc(st)}<small>${st?.n ? `${st.n.toLocaleString()}回・勝率${Math.round(st.win * 100)}%・平均${pctf(st.avg, 2)}` : 'なし'}</small></div>`;
   const cell = (st) => (st?.n ? `<td class="num mono">${st.n.toLocaleString()}</td><td class="num mono">${Math.round(st.win * 100)}%</td><td class="num mono ${sign(st.excess ?? st.avg)}">${pctf(st.excess ?? st.avg, 2)}</td>` : '<td class="num muted">0</td><td></td><td></td>');
-  $('#bt-body').innerHTML = `${aiModelSection()}${aiModelSection(state.server.model20, 20)}
+  $('#bt-body').innerHTML = `${aiModelSection()}${aiModelSection(state.server.model20, 20)}${experimentsHtml()}
     <h3>シグナル点数方式の成績</h3>
     <p class="muted small">対象: ${src}。シグナルが出た日の終値で買い、5営業日後の終値と比べています。大きな数字は<b>市場平均との差</b>（同じ日の全銘柄の平均を引いた値）で、銘柄選びの腕前を表します。</p>
     <div class="kpis">

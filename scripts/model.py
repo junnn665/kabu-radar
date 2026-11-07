@@ -756,7 +756,7 @@ def main():
         meta_reason = {}
     dump({"date": str(df["date"].max()), "reasons": reasons, **meta_reason}, os.path.join(args.out, f"ai_reasons{suf}.json"))
     meta = load(meta_path, {})
-    dump({"date": str(df["date"].max()), "horizon": H, "model": meta, "report": report, "center": round(center * 100, 3), "preds": out}, os.path.join(args.out, f"predictions{suf}.json"))
+    dump({"date": str(df["date"].max()), "horizon": H, "model": meta, "report": report, "center": round(center * 100, 3), "finsEnd": fins_end, "preds": out}, os.path.join(args.out, f"predictions{suf}.json"))
     print(f"予測 {len(out):,}銘柄（{time.time() - t0:.0f}s）", json.dumps({k: report[k] for k in ("ic", "top2pct")} if report else {}, ensure_ascii=False))
 
 

@@ -67,6 +67,14 @@ test('build_data generates all files and keeps paper-trade state between runs', 
   const pai = read(path.join(out1, 'paper_ai.json'));
   assert.ok(pai.open.length <= 1 && pai.open.every((p) => p.sym === uni[0].sym));
   assert.ok(read(path.join(out1, 'model.json')).report.ic === 0.03);
+  // 2026-11 追加：出したAIピックの記録・業種の流れ・データの異常チェック・相場の荒れ具合・週次レポートの状態
+  const log1 = read(path.join(out1, 'ai_log.json'));
+  assert.ok(Object.values(log1.picks || {}).length === 1);
+  assert.ok(read(path.join(out1, 'sector_flow.json')).w1.dates.length >= 1);
+  const meta1 = read(path.join(out1, 'meta.json'));
+  assert.ok(meta1.dataHealth && Array.isArray(meta1.dataHealth.issues));
+  assert.ok(typeof read(path.join(out1, 'market.json')).stress.level === 'number');
+  assert.ok(read(path.join(out1, 'weekly.json')).lastWeek);
 
   run(out1, out2, ['--mode', 'intraday']); // 2回目（日中）：重い計算は使い回し、同じ価格なら二重に買わない
   assert.equal(read(path.join(out2, 'backtest.json')).updatedAt, bt.updatedAt);

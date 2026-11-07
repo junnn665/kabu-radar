@@ -168,3 +168,23 @@ test('値動きの似かた・AIの順位の推移・業種の流れ', async () 
   const sf = sectorFlow(log, { A: 'bank', B: 'it', C: 'it' }, { topPct: 0.34 });
   assert.deepEqual(sf.sectors.find((x) => x.name === 'bank').share, [1, 0]);
 });
+
+test('週次レポート・モデルの悪化・データの異常チェック', async () => {
+  const { weekKey, modelDrift, checkData, weeklyReport } = await import('../scripts/build_data.mjs');
+  assert.equal(weekKey('2026-11-06'), '2026-11-02'); // 金曜 → その週の月曜
+  assert.equal(weekKey('2026-11-09'), '2026-11-09');
+  assert.equal(modelDrift({ picks: { excess: 0.012, recent3m: -0.005 } }, null).length, 1);
+  assert.equal(modelDrift({ picks: { excess: 0.012, recent3m: 0.004 } }, null).length, 0);
+  const rows = [{ liquid: true, pred: 1 }, { liquid: true, pred: null }];
+  const dh = checkData({ fetchMeta: { history: { fetched: 50, universe: 100 }, errors: [] }, latestBar: '2026-10-30', predDoc: { finsEnd: '2026-05-01' }, rows, mode: 'daily', today: '2026-11-07' });
+  assert.equal(dh.ok, false);
+  assert.equal(dh.issues.length, 4); // 取得数・日足が古い・予測が無い銘柄・決算データが古い
+  assert.ok(checkData({ fetchMeta: null, latestBar: '2026-11-06', predDoc: { finsEnd: '2026-09-01' }, rows: [{ liquid: true, pred: 1 }], mode: 'daily', today: '2026-11-07' }).ok);
+  const track = { days: [{ date: '2026-11-04', elapsed: 3, done: false, pick: { excess: -0.02, win: 0, syms: [{ name: 'X', ret: 0.03, ex: 0.01 }] } }] };
+  const market = { N225: [{ date: '2026-10-31', close: 100 }, { date: '2026-11-06', close: 95 }] };
+  const r = weeklyReport({ week: '2026-11-02', track, paperAI: { closed: [{ exitDate: '2026-11-04', ret: 0.1, pnl: 10000 }] }, paper: { closed: [] }, market });
+  assert.equal(r.label, '11/2〜11/8');
+  assert.ok(Math.abs(r.n225 + 0.05) < 1e-9);
+  assert.equal(r.paperAI.pnl, 10000);
+  assert.match(r.text, /日経平均 -5.0%/);
+});
