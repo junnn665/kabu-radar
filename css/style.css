@@ -497,6 +497,7 @@ div.hm-t:hover { outline: none; }
 .track small { color: var(--muted); font-size: 11px; }
 .track.bad { border-color: #fb923c66; background: #fb923c12; }
 .track.bad > b { color: #fdba74; }
+.warn-note { color: #fdba74; font-size: 11px; }
 .earn { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 12px 0 4px; background: var(--panel2); }
 .earn.good { border-color: color-mix(in srgb, var(--up) 50%, var(--line)); }
 .earn.bad { border-color: color-mix(in srgb, var(--down) 50%, var(--line)); }

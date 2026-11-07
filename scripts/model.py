@@ -28,6 +28,7 @@ TRAIN_WINDOW = 500       # 学習に使う過去の営業日数（約2年）
 TEST_DAYS = 250          # 検証する期間（直近約1年）
 MIN_TRAIN_DAYS = int(os.environ.get("MODEL_MIN_TRAIN_DAYS", 120))
 MIN_ROWS = int(os.environ.get("MODEL_MIN_ROWS", 5000))
+PICK_N, PICK_PER_SECTOR = 5, 2  # 本番のAIピック：1日5銘柄、同じ業種は2銘柄まで（js/app.js の aiPicks・js/aitrack.js と同じ）
 JST = dt.timezone(dt.timedelta(hours=9))
 PARAMS = dict(objective="huber", alpha=0.05, learning_rate=0.04, num_leaves=31, min_data_in_leaf=400,
               feature_fraction=0.8, bagging_fraction=0.7, bagging_freq=1, lambda_l2=10.0, verbose=-1, seed=7,
@@ -514,6 +515,12 @@ def evaluate(df, cols, label="ex", quiet=False, ev=("ex", "fwd"), opts=None):
     daily_sn = top2sn.groupby("date")["ex"].mean()
     # 偏り：上位2%のうち最も多い業種が占める割合（日ごとの平均）
     conc = top2.groupby("date")["sector"].agg(lambda x: x.value_counts(normalize=True).iloc[0]).mean()
+    # 本番と同じ選び方：予測の高い順に、同じ業種は2銘柄まで・1日5銘柄（ホームのAIピック・仮想口座）
+    srt = p.sort_values(["date", "pred"], ascending=[True, False])
+    picks = srt[srt.groupby(["date", "sector"]).cumcount() < PICK_PER_SECTOR].groupby("date").head(PICK_N)
+    daily_pk = picks.groupby("date")["ex"].mean()
+    monthly_pk = picks.assign(m=lambda x: x["date"].str[:7]).groupby("m")["ex"].mean()
+    all_days = sorted(p["date"].unique())
     return {
         "sectorConcentration": float(conc), "positiveMonths": float((monthly > 0).mean()),
         "from": str(p["date"].min()), "to": str(p["date"].max()), "rows": int(len(p)), "days": int(p["date"].nunique()),
@@ -527,6 +534,12 @@ def evaluate(df, cols, label="ex", quiet=False, ev=("ex", "fwd"), opts=None):
                                  "sectorConcentration": float(top2sn.groupby("date")["sector"].agg(lambda x: x.value_counts(normalize=True).iloc[0]).mean())},
         "top2Risk": {"worstDay5pct": float(daily.quantile(0.05)), "negDays": float((daily < 0).mean())},
         "monthlyTop2pct": {k: float(v) for k, v in monthly.items()},
+        "picks": {"n": int(len(picks)), "perDay": PICK_N, "perSector": PICK_PER_SECTOR,
+                  "excess": float(picks["ex"].mean()), "win": float((picks["fwd"] > 0).mean()), "exWin": float((picks["ex"] > 0).mean()),
+                  "worstDay5pct": float(daily_pk.quantile(0.05)), "negDays": float((daily_pk < 0).mean()),
+                  "positiveMonths": float((monthly_pk > 0).mean()), "monthly": {k: float(v) for k, v in monthly_pk.items()},
+                  "recent3m": float(picks.loc[picks["date"] >= all_days[-63], "ex"].mean()),
+                  "recent1m": float(picks.loc[picks["date"] >= all_days[-21], "ex"].mean())},
         # 予測の値 → 市場平均との差（%）への換算（順位で学ぶ設計は予測が「順位の点数」なので、検証結果から換算の傾きを求める）
         "calib": {"slope": float(np.polyfit(p["pred"].to_numpy(), p["ex"].to_numpy(), 1)[0])},
         "recent": {  # 直近の成績（相場の流れが変わったときに強いか）
@@ -590,10 +603,11 @@ def main():
             v = VARIANTS[name]
             t1 = time.time()
             r = evaluate(exp_df, feature_cols(exp_df, v), label_col(v), quiet=True, ev=eval_cols(v), opts=v.get("opts"))
-            res[name] = {k: r[k] for k in ("ic", "icPositiveDays", "top2pct", "bottom2pct", "sectorConcentration", "positiveMonths", "top2pctSectorNeutral", "top2Risk", "recent", "monthlyTop2pct")} | {"top20": r["top"][1]}
+            res[name] = {k: r[k] for k in ("ic", "icPositiveDays", "top2pct", "picks", "bottom2pct", "sectorConcentration", "positiveMonths", "top2pctSectorNeutral", "top2Risk", "recent", "monthlyTop2pct")} | {"top20": r["top"][1]}
             sn, rk = r["top2pctSectorNeutral"], r["top2Risk"]
             print(f"EXP {name}: IC {r['ic']:.3f} top2% {r['top2pct']['excess'] * 100:+.2f}% win {r['top2pct']['win'] * 100:.0f}% "
                   f"偏り {r['sectorConcentration'] * 100:.0f}% 月勝率 {r['positiveMonths'] * 100:.0f}% 悪い日(5%) {rk['worstDay5pct'] * 100:+.2f}% 負け日 {rk['negDays'] * 100:.0f}% "
+                  f"｜AIピック(業種2・5銘柄) {r['picks']['excess'] * 100:+.2f}% win {r['picks']['win'] * 100:.0f}% 月勝率 {r['picks']['positiveMonths'] * 100:.0f}% "
                   f"｜業種内順位 top2% {sn['excess'] * 100:+.2f}% ｜直近3か月 top2% {r['recent']['top2_3m'] * 100:+.2f}% IC {r['recent']['ic_3m']:.3f} bottom2% {r['recent']['bottom2_3m'] * 100:+.2f}% ｜直近1か月 top2% {r['recent']['top2_1m'] * 100:+.2f}% ({time.time() - t1:.0f}s)", flush=True)
         dump(res, os.path.join(args.out, f"experiments{suf}.json"))
     variant = VARIANTS[DEFAULT_VARIANT]

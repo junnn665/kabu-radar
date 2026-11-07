@@ -11,7 +11,7 @@ import { buildPanel, panelStats, walkForward, simulate, tradeSummary, DEFAULT_RU
 import { makeRegime } from '../js/market.js';
 import { computeReview } from '../js/review.js';
 import { levels } from '../js/levels.js';
-import { updateLog, evaluateLog } from '../js/aitrack.js';
+import { updateLog, evaluateLog, liveHealth } from '../js/aitrack.js';
 import { explain, explainGithub, AI_MODEL_DEFAULT, GH_MODEL_DEFAULT } from '../js/ai.js';
 
 const args = Object.fromEntries(
@@ -171,10 +171,18 @@ async function main() {
   // 答え合わせは「今のモデルになってから」の分で集計（2026-10-28 に順位で学ぶ設計へ変更）。それ以前の分は previous に要約
   const AI_TRACK_SINCE = '2026-10-30'; // 2026-10-30：決算の数字を入れたモデルに変更
   const nameMap = Object.fromEntries(Object.entries(meta).map(([k, v]) => [k, v.name]));
-  const part = (keep) => ({ days: Object.fromEntries(Object.entries(aiLog.days || {}).filter(([d]) => keep(d))) });
-  const prevTrack = evaluateLog(part((d) => d < AI_TRACK_SINCE), history, nameMap);
-  writeJson(path.join(OUT, 'ai_track.json'), { updatedAt: now.toISOString(), since: AI_TRACK_SINCE, ...evaluateLog(part((d) => d >= AI_TRACK_SINCE), history, nameMap),
+  const sectorMap = Object.fromEntries(Object.entries(meta).map(([k, v]) => [k, v.sector || null]));
+  const part = (lg, keep) => ({ days: Object.fromEntries(Object.entries(lg.days || {}).filter(([d]) => keep(d))) });
+  const prevTrack = evaluateLog(part(aiLog, (d) => d < AI_TRACK_SINCE), history, nameMap, { sectors: sectorMap });
+  const track = evaluateLog(part(aiLog, (d) => d >= AI_TRACK_SINCE), history, nameMap, { sectors: sectorMap });
+  // health：本番で外れ続けていたら、ホームのAIピックを止める判断（js/aitrack.js liveHealth）
+  writeJson(path.join(OUT, 'ai_track.json'), { updatedAt: now.toISOString(), since: AI_TRACK_SINCE, ...track, health: liveHealth(track),
     previous: { until: AI_TRACK_SINCE, note: '前の設計のモデル', total: prevTrack.total } });
+  // 1か月先（20営業日）の予測も記録して答え合わせ（確定に1か月かかるので、途中経過も見る）
+  const aiLog20 = updateLog(readJson(path.join(PREV, 'ai_log20.json'), null), pred20Doc?.date, pred20Doc?.preds);
+  writeJson(path.join(OUT, 'ai_log20.json'), aiLog20);
+  const track20 = evaluateLog(aiLog20, history, nameMap, { horizon: 20, sectors: sectorMap });
+  writeJson(path.join(OUT, 'ai_track20.json'), { updatedAt: now.toISOString(), ...track20, health: liveHealth(track20, { minElapsed: 5 }) });
 
   // 4) スクリーナー（地合いフィルターは検証で逆効果だったため、score には反映しない。penalty は参考値）
   const details = {};

@@ -94,12 +94,28 @@ test('AI live tracking: logs liquid predictions and scores them 5 days later', a
   let log = updateLog(null, d0, perfect);
   log = updateLog(log, d1, { ...perfect, thin: [5, null] });
   assert.ok(!('thin' in log.days[d1]));
-  const r = evaluateLog(log, history);
+  const r = evaluateLog(log, history, {}, { sectors: Object.fromEntries(syms.map((s, i) => [s, 'S' + (i % 10)])) });
   const day0 = r.days.find((d) => d.date === d0);
   assert.ok(day0.done && day0.top.excess > 0 && day0.bottom.excess < 0);
   assert.ok(day0.ic > 0.99);
   assert.equal(r.days.find((d) => d.date === d1).done, false);
   assert.equal(r.total.days, 1);
+  assert.ok(day0.pick.n === 5 && day0.pick.excess > 0 && r.total.pickN === 5);
+});
+
+test('AI live tracking: AIピックは同じ業種2銘柄まで、外れ判定は途中経過も使う', async () => {
+  const { pickTop, liveHealth } = await import('../js/aitrack.js');
+  const rows = ['a1', 'a2', 'a3', 'b1', 'a4', 'c1', 'b2', 'b3', 'd1'].map((s, i) => ({ s, p: 10 - i }));
+  assert.deepEqual(pickTop(rows, (s) => s[0]).map((r) => r.s), ['a1', 'a2', 'b1', 'c1', 'b2']);
+  const day = (date, elapsed, excess, done = false) => ({ date, elapsed, done, pick: { excess, win: 0 } });
+  // 確定前でも、2日以上たった予測が3日分そろって平均 −1% 未満なら止める
+  assert.equal(liveHealth({ days: [day('d4', 1, -0.05), day('d3', 2, -0.03), day('d2', 3, -0.02), day('d1', 4, -0.02)] }).failing, true);
+  assert.equal(liveHealth({ days: [day('d3', 2, -0.03), day('d2', 3, -0.02)] }).failing, false); // 日数が足りない
+  assert.equal(liveHealth({ days: [day('d3', 2, -0.005), day('d2', 3, -0.005), day('d1', 4, -0.005)] }).failing, false); // 途中経過は −1% まで様子見
+  // 確定した日が2日以上あれば、0% 未満で止める
+  assert.equal(liveHealth({ days: [day('d3', 5, -0.005, true), day('d2', 5, -0.005, true), day('d1', 5, 0.001, true)] }).failing, true);
+  assert.equal(liveHealth({ days: [day('d3', 5, 0.01, true), day('d2', 5, -0.005, true), day('d1', 5, 0.001, true)] }).failing, false);
+  assert.equal(liveHealth(null).failing, false);
 });
 
 test('CSV import: SBI証券のポートフォリオ（Shift_JIS・特定とNISAに分割）', async () => {
