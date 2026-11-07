@@ -11,6 +11,7 @@ import { decodeCsv, parseCsvText, extractHoldings } from './csvimport.js';
 import { dividendPlan, concentration, upcoming, TAX } from './portfolio.js';
 import { squarify } from './treemap.js';
 import { selectPicks, EARNINGS_SKIP_DAYS } from './picks.js';
+import { COST_RT } from './aitrack.js';
 
 const DEFAULT_REPO = 'junnn665/kabu-radar';
 
@@ -809,6 +810,7 @@ function renderDetail() {
       <small>${label}</small>
       <b class="mono ${p >= 0 ? 'aiup' : 'down'}">${signedPct(p, 2)}</b>
       <span class="aipos">${r != null ? topPct(r) : '順位の対象外'}</span>
+      ${confidence(r, rep)}
       ${rep?.picks ? `<small class="muted">AIピックの過去成績 平均${pctf(rep.picks.excess, 1)}・勝率${Math.round(rep.picks.win * 100)}%</small>`
         : rep?.top2pct ? `<small class="muted">上位2%の過去成績 平均${pctf(rep.top2pct.excess, 1)}・勝率${Math.round(rep.top2pct.win * 100)}%</small>` : ''}
       ${weak ? '<small class="warn-note">最近は外れているので参考程度に</small>' : ''}
@@ -977,10 +979,11 @@ function paperBlock(p, rulesText) {
   const realized = closed.reduce((a, t) => a + t.ret * p.notional, 0);
   const unreal = (p.open || []).reduce((a, t) => a + (t.ret || 0) * p.notional, 0);
   const wins = closed.filter((t) => t.ret > 0).length;
+  const net = realized - closed.length * COST_RT * p.notional; // 売買コスト（往復0.2%の目安）を引いた確定損益
   return `<p class="muted small">${rulesText}</p>
     <div class="kpis">
       <div><small>運用開始</small><b>${esc(p.startedAt)}</b></div>
-      <div><small>確定損益</small><b class="${sign(realized)}">${yen(realized)}</b></div>
+      <div><small>確定損益</small><b class="${sign(realized)}">${yen(realized)}</b><small>コスト込み <span class="${sign(net)}">${yen(net)}</span></small></div>
       <div><small>含み損益</small><b class="${sign(unreal)}">${yen(unreal)}</b></div>
       <div><small>勝率</small><b>${closed.length ? `${Math.round((wins / closed.length) * 100)}%` : '—'}</b><small>${closed.length}回決済</small></div>
     </div>
@@ -1217,6 +1220,23 @@ function aiTrackSection() {
   return trackBlock(state.server.ai_track, '1週間先') + trackBlock(state.server.ai_track20, '1か月先', true) + '<h3>シグナル点数「強い買い」の答え合わせ</h3>';
 }
 
+// 健全度グラフ：日ごとのAIピックの市場平均との差（濃い棒＝確定、薄い棒＝途中経過）。止める基準の線も引く
+function healthChart(t) {
+  const ds = (t.days || []).filter((d) => d.pick?.excess != null && d.elapsed >= 1).slice(0, 30).reverse();
+  if (ds.length < 2) return '';
+  const W = 320, Hh = 110, pad = 18, mx = Math.max(0.02, ...ds.map((d) => Math.abs(d.pick.excess)));
+  const y = (v) => Hh / 2 - (v / mx) * (Hh / 2 - 8);
+  const bw = (W - pad) / ds.length;
+  const lim = t.health?.limit;
+  return `<div class="hchart"><small class="muted">日ごとのAIピックの成績（市場平均との差・濃い棒は${t.horizon}営業日後まで確定）</small>
+    <svg viewBox="0 0 ${W} ${Hh}" role="img" aria-label="日ごとの成績">
+      <line x1="${pad}" x2="${W}" y1="${y(0)}" y2="${y(0)}" class="axis"/>
+      ${lim != null && lim < 0 ? `<line x1="${pad}" x2="${W}" y1="${y(lim)}" y2="${y(lim)}" class="limit"/><text x="${pad}" y="${y(lim) + 10}" class="lbl">止める目安 ${pctf(lim, 0)}</text>` : ''}
+      <text x="0" y="10" class="lbl">+${(mx * 100).toFixed(0)}%</text><text x="0" y="${Hh - 2}" class="lbl">−${(mx * 100).toFixed(0)}%</text>
+      ${ds.map((d, i) => { const v = d.pick.excess, y0 = y(0), y1 = y(v); return `<rect x="${pad + i * bw + 1}" y="${Math.min(y0, y1)}" width="${Math.max(1, bw - 2)}" height="${Math.max(1, Math.abs(y1 - y0))}" class="${v >= 0 ? 'pos' : 'neg'}${d.done ? '' : ' interim'}"><title>${esc(d.date)} ${pctf(v, 2)}${d.done ? '' : `（途中経過 ${d.elapsed}日目）`}</title></rect>`; }).join('')}
+    </svg><small class="muted">${esc(ds[0].date)} 〜 ${esc(ds.at(-1).date)}</small></div>`;
+}
+
 // 本番の答え合わせ1つ分（1週間先・1か月先）。主役は実際にホームに出したAIピック（同じ業種は2銘柄まで・5銘柄）
 function trackBlock(t, label, optional = false) {
   if (!t?.days?.length) return optional ? '' : `<h3>AI予測の答え合わせ（本番・${label}）</h3><p class="muted small">毎日のAI予測を記録しています。${t?.horizon || 5}営業日たつと、ここに実際の成績が出ます。</p>`;
@@ -1228,10 +1248,12 @@ function trackBlock(t, label, optional = false) {
     ${h?.failing ? `<p class="track bad"><b>外れている時期です</b><small>直近${h.days}日分の予測（${!h.done ? 'すべて途中経過' : h.done < h.days ? `うち${h.days - h.done}日は途中経過` : 'すべて確定'}）で、AIピックが市場平均より ${pctf(h.excess, 1)}。${label === '1週間先' ? '設定が「自動」なら、ホームのAIピックはシグナル点数に切り替わります。' : '参考程度に見てください。'}</small></p>` : ''}
     <div class="kpis">
       <div><small>AIピックの市場平均との差</small><b class="${sign(T.days ? T.pickExcess : liveEx)}">${T.days ? pctf(T.pickExcess, 2) : liveEx != null ? pctf(liveEx, 2) : '集計中'}</b><small>${T.days ? `確定${T.days}日分・${T.pickN}銘柄・値上がり${T.pickWin != null ? Math.round(T.pickWin * 100) + '%' : '—'}` : live.length ? `途中経過（${live.length}日分）` : ''}</small></div>
+      ${T.days ? `<div><small>コスト込み（往復${(COST_RT * 100).toFixed(1)}%）</small><b class="${sign(T.pickExcessNet)}">${pctf(T.pickExcessNet, 2)}</b><small>${T.pickExcessOpen != null ? `翌朝の寄り付きで買うと ${pctf(T.pickExcessOpen, 2)}` : ''}</small></div>` : ''}
       <div><small>上位${P}%（業種の制限なし）</small><b class="${sign(T.topExcess)}">${T.days ? pctf(T.topExcess, 2) : '—'}</b><small>${T.days ? `${T.topN}銘柄・勝率${T.topWin != null ? Math.round(T.topWin * 100) + '%' : '—'}` : ''}</small></div>
       <div><small>下位${P}%</small><b class="${sign(T.bottomExcess)}">${T.days ? pctf(T.bottomExcess, 2) : '—'}</b></div>
       <div><small>予測と結果の相関（IC）</small><b>${T.ic != null ? T.ic.toFixed(3) : '—'}</b><small>${T.icPositive != null ? `プラスの日 ${Math.round(T.icPositive * 100)}%` : ''}</small></div>
     </div>
+    ${healthChart(t)}
     ${t.days.slice(0, 20).map((d) => {
       const pk = d.pick, row = (p) => `<tr data-scr="${esc(p.sym)}"><td><div class="sym">${esc(p.sym)}</div><div class="nm">${esc(p.name)}</div></td>
           <td class="num mono">${p.pred > 0 ? '+' : ''}${p.pred.toFixed(2)}%</td><td class="num mono ${sign(p.ret)}">${pctf(p.ret)}</td><td class="num mono ${sign(p.ex)}">${pctf(p.ex)}</td></tr>`;
@@ -1307,6 +1329,14 @@ function reasonValue(k, v) {
   }
 }
 
+// 予測の確からしさ：この順位の予測が、過去（学習に使っていない期間）にどれくらい当たったか
+function confidence(rank, rep) {
+  const b = rank != null && rep?.rankBins?.find((x) => rank > x.lo && rank <= x.hi);
+  if (!b) return '';
+  const band = b.lo >= 0.5 ? `上位${Math.round((1 - b.hi) * 100)}〜${Math.round((1 - b.lo) * 100)}%` : `下位${Math.round(b.lo * 100)}〜${Math.round(b.hi * 100)}%`;
+  return `<small class="conf">この強さ（${band}）の予測は過去に 値上がり${Math.round(b.win * 100)}%・市場平均に勝った${Math.round(b.exWin * 100)}%（平均${pctf(b.excess, 1)}・${b.n.toLocaleString()}回）</small>`;
+}
+
 function reasonsHtml(s) {
   const rs = state.server.ai_reasons?.reasons?.[s];
   if (!rs?.length) return '';
@@ -1326,6 +1356,8 @@ function aiModelSection(m = state.server.model, days = 5) {
     ${days === 20 && h20Weak() ? `<p class="track bad"><b>1か月先の予測は参考程度に</b><small>${h20Weak().map(esc).join('／')}。下の数字は検証期間全体の平均で、いまの相場では当たっていません。</small></p>` : ''}
     <div class="kpis">
       ${r.picks ? `<div><small>AIピック（同じ業種は${r.picks.perSector}銘柄まで・1日${r.picks.perDay}銘柄）</small><b class="${sign(r.picks.excess)}">${pctf(r.picks.excess, 2)}</b><small>本番と同じ選び方・勝率${Math.round(r.picks.win * 100)}%・プラスの月${Math.round(r.picks.positiveMonths * 100)}%${r.picks.recent3m != null ? `・直近3か月 ${pctf(r.picks.recent3m, 1)}` : ''}</small></div>` : ''}
+      ${r.picks?.excessNet != null ? `<div><small>AIピック・コスト込み（往復${(r.picks.cost * 100).toFixed(1)}%）</small><b class="${sign(r.picks.excessNet)}">${pctf(r.picks.excessNet, 2)}</b><small>${r.picks.excessOpen != null ? `翌朝の寄り付きで買うと ${pctf(r.picks.excessOpen, 2)}` : ''}</small></div>` : ''}
+      ${r.picks?.afterDrop?.n ? `<div><small>日経平均が5日で4%以上下げた後</small><b class="${sign(r.picks.afterDrop.excess)}">${pctf(r.picks.afterDrop.excess, 2)}</b><small>${r.picks.afterDrop.days}日分（普段は ${pctf(r.picks.normal?.excess, 2)}）</small></div>` : ''}
       <div><small>予測上位2%（市場平均との差）</small><b class="${sign(r.top2pct.excess)}">${pctf(r.top2pct.excess, 2)}</b><small>${r.top2pct.n.toLocaleString()}回・勝率${Math.round(r.top2pct.win * 100)}%${r.sectorConcentration != null ? `・最も多い業種が平均${Math.round(r.sectorConcentration * 100)}%` : ''}</small></div>
       <div><small>毎日の上位10銘柄</small><b class="${sign(r.top[0].excess)}">${pctf(r.top[0].excess, 2)}</b><small>勝率${Math.round(r.top[0].win * 100)}%・平均${pctf(r.top[0].avg, 2)}</small></div>
       <div><small>予測下位2%</small><b class="${sign(r.bottom2pct.excess)}">${pctf(r.bottom2pct.excess, 2)}</b><small>${r.bottom2pct.n.toLocaleString()}回</small></div>

@@ -4,6 +4,7 @@
 import { PICK_N, PICK_PER_SECTOR } from './picks.js';
 
 const KEEP_DAYS = 90;
+export const COST_RT = 0.002; // 売買コストの目安（往復）。scripts/model.py の COST_RT と同じ
 
 // preds: { sym: [予測(%), 順位] }。順位がある（売買代金1億円以上）銘柄だけ記録する
 // picks: その日ホームに出したAIピック（js/picks.js selectPicks の結果のコード）。答え合わせはこれをそのまま採点する
@@ -63,7 +64,7 @@ export function evaluateLog(log, history, names = {}, { horizon = 5, topPct = 0.
     return idxCache.get(s).get(d);
   };
   const days = [];
-  const all = { top: [], topWin: [], bottom: [], ic: [], pick: [], pickWin: [] };
+  const all = { top: [], topWin: [], bottom: [], ic: [], pick: [], pickWin: [], pickO: [] };
   for (const date of Object.keys(log?.days || {}).sort().reverse()) {
     const preds = log.days[date];
     const rows = [];
@@ -74,11 +75,16 @@ export function evaluateLog(log, history, names = {}, { horizon = 5, topPct = 0.
       if (!cs || i == null) continue;
       const j = Math.min(i + horizon, cs.length - 1);
       elapsed = elapsed == null ? j - i : Math.max(elapsed, j - i);
-      rows.push({ s, p, ret: cs[j].close / cs[i].close - 1, days: j - i });
+      // retO：翌朝の寄り付きで買った場合（朝に予測を見てから買う人の実際に近い）
+      const retO = i + 1 <= j && cs[i + 1].open > 0 ? cs[j].close / cs[i + 1].open - 1 : null;
+      rows.push({ s, p, ret: cs[j].close / cs[i].close - 1, retO, days: j - i });
     }
     if (!rows.length || !elapsed) { days.push({ date, n: Object.keys(preds).length, elapsed: 0, done: false }); continue; }
     const mkt = mean(rows.map((r) => r.ret));
     rows.forEach((r) => { r.ex = r.ret - mkt; });
+    const oRows = rows.filter((r) => r.retO != null);
+    const mktO = mean(oRows.map((r) => r.retO));
+    oRows.forEach((r) => { r.exO = r.retO - mktO; });
     rows.sort((a, b) => b.p - a.p);
     const k = Math.max(1, Math.round(rows.length * topPct));
     const top = rows.slice(0, k), bottom = rows.slice(-k);
@@ -92,7 +98,9 @@ export function evaluateLog(log, history, names = {}, { horizon = 5, topPct = 0.
       top: { n: top.length, excess: mean(top.map((r) => r.ex)), win: top.filter((r) => r.ret > 0).length / top.length, avg: mean(top.map((r) => r.ret)) },
       bottom: { n: bottom.length, excess: mean(bottom.map((r) => r.ex)) },
       // ホームに実際に出したAIピック（業種の偏りを抑えた選び方）の成績
-      pick: { n: pk.length, logged: !!logged, excess: mean(pk.map((r) => r.ex)), win: pk.length ? pk.filter((r) => r.ret > 0).length / pk.length : null, avg: mean(pk.map((r) => r.ret)),
+      pick: { n: pk.length, logged: !!logged, excess: mean(pk.map((r) => r.ex)),
+        excessNet: pk.length ? mean(pk.map((r) => r.ex)) - COST_RT : null,
+        excessOpen: mean(pk.filter((r) => r.exO != null).map((r) => r.exO)), win: pk.length ? pk.filter((r) => r.ret > 0).length / pk.length : null, avg: mean(pk.map((r) => r.ret)),
         syms: pk.map((r) => ({ sym: r.s, name: names[r.s] || r.s, sector: sectors[r.s] || null, pred: r.p, ret: r.ret, ex: r.ex })) },
       ic: spearman(rows.map((r) => r.p), rows.map((r) => r.ex)),
       picks: top.slice(0, 10).map((r) => ({ sym: r.s, name: names[r.s] || r.s, pred: r.p, ret: r.ret, ex: r.ex })),
@@ -102,6 +110,7 @@ export function evaluateLog(log, history, names = {}, { horizon = 5, topPct = 0.
       all.top.push(...top.map((r) => r.ex)); all.topWin.push(...top.map((r) => (r.ret > 0 ? 1 : 0)));
       all.bottom.push(...bottom.map((r) => r.ex));
       all.pick.push(...pk.map((r) => r.ex)); all.pickWin.push(...pk.map((r) => (r.ret > 0 ? 1 : 0)));
+      all.pickO.push(...pk.filter((r) => r.exO != null).map((r) => r.exO));
       if (d.ic != null) all.ic.push(d.ic);
     }
   }
@@ -111,6 +120,7 @@ export function evaluateLog(log, history, names = {}, { horizon = 5, topPct = 0.
       days: all.ic.length, topN: all.top.length,
       topExcess: mean(all.top), topWin: mean(all.topWin), bottomExcess: mean(all.bottom),
       pickN: all.pick.length, pickExcess: mean(all.pick), pickWin: mean(all.pickWin),
+      pickExcessNet: all.pick.length ? mean(all.pick) - COST_RT : null, pickExcessOpen: mean(all.pickO), cost: COST_RT,
       ic: mean(all.ic), icPositive: all.ic.length ? all.ic.filter((x) => x > 0).length / all.ic.length : null,
     },
     days,
